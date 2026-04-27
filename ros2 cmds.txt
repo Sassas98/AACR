@@ -1,0 +1,11 @@
+<build + run>
+# 1. carichi ROS
+source /opt/ros/jazzy/setup.bash
+# 2. vai nella workspace
+cd ~/AACR
+# 3. build
+colcon build
+# 4. attivi la workspace
+source install/setup.bash
+# 5. attivi il launcher
+ros2 launch smart_university launch.py

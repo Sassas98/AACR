@@ -1,0 +1,48 @@
+# ===== ROS2 / colcon =====
+build/
+install/
+log/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# virtual env
+.venv/
+venv/
+env/
+
+# ===== Editor / OS =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== ROS specific =====
+*.log
+*.bag
+*.db3
+
+# ===== Gazebo / Ignition =====
+*.state
+*.world~
+*.sdf~
+
+# ===== Colcon cache =====
+.colcon/
+*.egg-info/
+
+# ===== CMake (se mischi pacchetti C++) =====
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ===== Misc =====
+*.tmp
+*.bak
