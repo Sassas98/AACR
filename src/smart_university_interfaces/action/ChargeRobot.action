@@ -1,0 +1,11 @@
+string robot_id
+string station_id
+
+---
+bool success
+string message
+
+---
+string status
+float32 battery_level
+float32 progress

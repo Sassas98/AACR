@@ -1,0 +1,10 @@
+string robot_id
+string shelf_id
+
+---
+bool success
+string message
+
+---
+string status
+float32 progress
