@@ -3,30 +3,34 @@ import os
 from glob import glob
 
 package_name = 'smart_city'
+package_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 def collect_files(folder):
     result = []
+    abs_folder = os.path.join(package_dir, folder)
 
-    if not os.path.exists(folder):
+    if not os.path.exists(abs_folder):
         return result
 
-    for path, _, files in os.walk(folder):
+    for root, _, files in os.walk(abs_folder):
         if not files:
             continue
 
+        relative_root = os.path.relpath(root, package_dir)
+
         result.append(
             (
-                os.path.join('share', package_name, path),
-                [os.path.join(path, file) for file in files]
+                os.path.join('share', package_name, relative_root),
+                [
+                    os.path.join(relative_root, file)
+                    for file in files
+                ]
             )
         )
 
     return result
 
-
-model_files = collect_files('model')
-config_files = collect_files('config')
 
 setup(
     name=package_name,
@@ -38,7 +42,7 @@ setup(
             ['resource/' + package_name]
         ),
         (
-            'share/' + package_name,
+            os.path.join('share', package_name),
             ['package.xml']
         ),
         (
@@ -49,13 +53,14 @@ setup(
             os.path.join('share', package_name, 'simulation'),
             glob('simulation/*.sdf')
         ),
-        *model_files,
-        *config_files
+
+        *collect_files('config'),
+        *collect_files('model'),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='marvin',
-    maintainer_email='marvin@todo.todo',
+    maintainer='marvin, abigail',
+    maintainer_email='marvin@todo.todo, abigail@todo.todo',
     description='ROS 2 distributed smart city transport simulation',
     license='MIT',
     extras_require={
