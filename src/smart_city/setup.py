@@ -4,15 +4,29 @@ from glob import glob
 
 package_name = 'smart_city'
 
-model_files = []
-for path, _, files in os.walk('model'):
-    for file in files:
-        model_files.append(
+
+def collect_files(folder):
+    result = []
+
+    if not os.path.exists(folder):
+        return result
+
+    for path, _, files in os.walk(folder):
+        if not files:
+            continue
+
+        result.append(
             (
                 os.path.join('share', package_name, path),
-                [os.path.join(path, file)]
+                [os.path.join(path, file) for file in files]
             )
         )
+
+    return result
+
+
+model_files = collect_files('model')
+config_files = collect_files('config')
 
 setup(
     name=package_name,
@@ -35,13 +49,14 @@ setup(
             os.path.join('share', package_name, 'simulation'),
             glob('simulation/*.sdf')
         ),
-        *model_files
+        *model_files,
+        *config_files
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='marvin, abigail',
-    maintainer_email='marvin@todo.todo, abigail@todo.todo',
-    description='ROS 2 multi-robot smart university cleaning simulation',
+    maintainer='marvin',
+    maintainer_email='marvin@todo.todo',
+    description='ROS 2 distributed smart city transport simulation',
     license='MIT',
     extras_require={
         'test': [
@@ -50,18 +65,15 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'environment_perception_node = smart_city.environment_perception_node:main',
-            'shelf_state_node = smart_city.shelf_state_node:main',
-            'task_allocator_node = smart_city.task_allocator_node:main',
-            'world_state_adapter_node = smart_city.world_state_adapter_node:main',
-            'mock_gazebo_world_state_node = smart_city.mock_gazebo_world_state_node:main',
+            'bus_path_manager = smart_city.bus_path_manager:main',
+            'navigation_executor = smart_city.navigation_executor:main',
+            'traffic_light_manager = smart_city.traffic_light_manager:main',
+            'taxi_coordinator = smart_city.taxi_coordinator:main',
+            'taxi_request_manager = smart_city.taxi_request_manager:main',
 
-            'robot_state_node = smart_city.robot_state_node:main',
-            'battery_manager_node = smart_city.battery_manager_node:main',
-            'navigator_node = smart_city.navigator_node:main',
-            'executor_node = smart_city.executor_node:main',
-            'cleaning_action_server = smart_city.cleaning_action_server:main',
-            'charging_action_server = smart_city.charging_action_server:main',
+            'bus_booking_generator = smart_city.bus_booking_generator:main',
+            'taxi_request_generator = smart_city.taxi_request_generator:main',
+            'private_car_simulator_node = smart_city.private_car_simulator_node:main',
         ],
     },
 )
