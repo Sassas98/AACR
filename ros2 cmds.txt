@@ -8,4 +8,4 @@ colcon build
 # 4. attivi la workspace
 source install/setup.bash
 # 5. attivi il launcher
-ros2 launch smart_university launch.py
+ros2 launch smart_city launch.py

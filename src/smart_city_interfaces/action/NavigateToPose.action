@@ -1,0 +1,14 @@
+string vehicle_id
+string mission_id
+string target_type
+float64 target_x
+float64 target_y
+float64 max_speed
+---
+bool success
+string message
+---
+float64 current_x
+float64 current_y
+float64 distance_remaining
+string status

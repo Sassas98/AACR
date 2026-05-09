@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net">
   <diagram name="Pagina-1" id="BVCX1Z2pZBF1aMxrMhTO">
-    <mxGraphModel dx="2347" dy="1998" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="1686" dy="1638" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -11,7 +11,7 @@
           <mxGeometry height="460" width="510" x="160" y="-140" as="geometry" />
         </mxCell>
         <mxCell id="g7s1D-YAluqxc9DfaqjA-17" parent="1" style="html=1;outlineConnect=0;whiteSpace=wrap;fillColor=light-dark(#000000,#CF881F);shape=mxgraph.archimate3.application;appType=workPackage;archiType=rounded;fillStyle=cross-hatch;strokeColor=none;" value="" vertex="1">
-          <mxGeometry height="130" width="210" x="810" y="15" as="geometry" />
+          <mxGeometry height="135" width="210" x="810" y="15" as="geometry" />
         </mxCell>
         <mxCell id="g7s1D-YAluqxc9DfaqjA-11" parent="1" style="html=1;outlineConnect=0;whiteSpace=wrap;fillColor=light-dark(#000000,#A82A32);shape=mxgraph.archimate3.application;appType=workPackage;archiType=rounded;fillStyle=cross-hatch;strokeColor=none;" value="" vertex="1">
           <mxGeometry height="320" width="520" x="120" y="190" as="geometry" />
@@ -60,10 +60,8 @@
         <mxCell id="6hpnGwHNhGZrO45cFF2S-28" edge="1" parent="1" source="6hpnGwHNhGZrO45cFF2S-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.419;exitY=0.019;exitDx=0;exitDy=0;entryX=0.295;entryY=1.004;entryDx=0;entryDy=0;strokeWidth=2;exitPerimeter=0;entryPerimeter=0;" target="6hpnGwHNhGZrO45cFF2S-6">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="550" y="170" />
-              <mxPoint x="890" y="170" />
-              <mxPoint x="890" y="110" />
-              <mxPoint x="890" y="110" />
+              <mxPoint x="550" y="210" />
+              <mxPoint x="890" y="210" />
             </Array>
           </mxGeometry>
         </mxCell>
@@ -269,6 +267,27 @@
             </Array>
             <mxPoint x="190" y="250" as="sourcePoint" />
             <mxPoint x="240" y="200" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="g5tclHRCQpBKyVJS4hYi-1" parent="1" style="whiteSpace=wrap;html=1;shape=mxgraph.basic.document;fillStyle=hatch;fillColor=#60a917;fontColor=#ffffff;strokeColor=#2D7600;" value="&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); font-size: 11px;&quot;&gt;city_map.json&lt;/font&gt;" vertex="1">
+          <mxGeometry height="90" width="90" x="690" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="g5tclHRCQpBKyVJS4hYi-2" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;rounded=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;strokeWidth=2;" target="6hpnGwHNhGZrO45cFF2S-6" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <Array as="points">
+              <mxPoint x="750" y="65" />
+            </Array>
+            <mxPoint x="750" y="90" as="sourcePoint" />
+            <mxPoint x="590" y="80" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="g5tclHRCQpBKyVJS4hYi-3" edge="1" parent="1" source="g5tclHRCQpBKyVJS4hYi-1" style="endArrow=none;dashed=1;html=1;rounded=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;strokeWidth=2;exitX=-0.008;exitY=0.713;exitDx=0;exitDy=0;exitPerimeter=0;" target="6hpnGwHNhGZrO45cFF2S-5" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <Array as="points">
+              <mxPoint x="530" y="154" />
+            </Array>
+            <mxPoint x="540" y="130" as="sourcePoint" />
+            <mxPoint x="590" y="80" as="targetPoint" />
           </mxGeometry>
         </mxCell>
       </root>

@@ -1,0 +1,12 @@
+{
+  "parkings": {
+    "parking_bus_1": { "x": -46.0, "y": 46.0, "vehicle_type": "BUS" },
+    "parking_bus_2": { "x": -46.0, "y": 42.0, "vehicle_type": "BUS" },
+    "parking_bus_3": { "x": -46.0, "y": 38.0, "vehicle_type": "BUS" },
+
+    "parking_taxi_1": { "x": 46.0, "y": -46.0, "vehicle_type": "TAXI" },
+    "parking_taxi_2": { "x": 42.0, "y": -46.0, "vehicle_type": "TAXI" },
+    "parking_taxi_3": { "x": 38.0, "y": -46.0, "vehicle_type": "TAXI" },
+    "parking_taxi_4": { "x": 34.0, "y": -46.0, "vehicle_type": "TAXI" }
+  }
+}
