@@ -4,71 +4,47 @@
       "id": "bus_1",
       "type": "BUS",
       "model": "bus",
-      "spawn": { "x": -46.0, "y": 46.0, "z": 0.1, "yaw": 0.0 },
+      "spawn": { "x": -39.4, "y": 35.0, "z": 0.1, "yaw": -1.57 },
       "initial_path_id": "path_A",
-      "sensors": {
-        "lidar": true,
-        "odom": true,
-        "cmd_vel": true
-      }
+      "sensors": { "lidar": true, "odom": true, "cmd_vel": true }
     },
     {
       "id": "bus_2",
       "type": "BUS",
       "model": "bus",
-      "spawn": { "x": -46.0, "y": 42.0, "z": 0.1, "yaw": 0.0 },
+      "spawn": { "x": -39.4, "y": 30.0, "z": 0.1, "yaw": -1.57 },
       "initial_path_id": "path_B",
-      "sensors": {
-        "lidar": true,
-        "odom": true,
-        "cmd_vel": true
-      }
+      "sensors": { "lidar": true, "odom": true, "cmd_vel": true }
     },
     {
       "id": "bus_3",
       "type": "BUS",
       "model": "bus",
-      "spawn": { "x": -46.0, "y": 38.0, "z": 0.1, "yaw": 0.0 },
+      "spawn": { "x": -39.4, "y": 25.0, "z": 0.1, "yaw": -1.57 },
       "initial_path_id": "path_C",
-      "sensors": {
-        "lidar": true,
-        "odom": true,
-        "cmd_vel": true
-      }
+      "sensors": { "lidar": true, "odom": true, "cmd_vel": true }
     },
 
     {
       "id": "taxi_1",
       "type": "TAXI",
       "model": "taxi",
-      "spawn": { "x": 46.0, "y": -46.0, "z": 0.1, "yaw": 3.14 },
-      "sensors": {
-        "lidar": true,
-        "odom": true,
-        "cmd_vel": true
-      }
+      "spawn": { "x": 35.0, "y": -39.4, "z": 0.1, "yaw": 3.14 },
+      "sensors": { "lidar": true, "odom": true, "cmd_vel": true }
     },
     {
       "id": "taxi_2",
       "type": "TAXI",
       "model": "taxi",
-      "spawn": { "x": 42.0, "y": -46.0, "z": 0.1, "yaw": 3.14 },
-      "sensors": {
-        "lidar": true,
-        "odom": true,
-        "cmd_vel": true
-      }
+      "spawn": { "x": 30.0, "y": -39.4, "z": 0.1, "yaw": 3.14 },
+      "sensors": { "lidar": true, "odom": true, "cmd_vel": true }
     },
     {
       "id": "taxi_3",
       "type": "TAXI",
       "model": "taxi",
-      "spawn": { "x": 38.0, "y": -46.0, "z": 0.1, "yaw": 3.14 },
-      "sensors": {
-        "lidar": true,
-        "odom": true,
-        "cmd_vel": true
-      }
+      "spawn": { "x": 25.0, "y": -39.4, "z": 0.1, "yaw": 3.14 },
+      "sensors": { "lidar": true, "odom": true, "cmd_vel": true }
     },
 
     {

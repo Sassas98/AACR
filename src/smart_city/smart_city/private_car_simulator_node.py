@@ -6,19 +6,21 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
+from rclpy.action import ActionClient
+
 from nav_msgs.msg import Odometry
 
+from smart_city_interfaces.action import NavigateToPose
 
-class PrivateCar:
+
+class PrivateCarState:
     def __init__(self, vehicle_id):
         self.vehicle_id = vehicle_id
         self.x = 0.0
         self.y = 0.0
-        self.yaw = 0.0
-        self.route = []
-        self.target_index = 0
+        self.busy = False
         self.last_goal_time = 0.0
+        self.goal_handle = None
 
 
 class PrivateCarSimulatorNode(Node):
@@ -28,31 +30,35 @@ class PrivateCarSimulatorNode(Node):
 
         self.declare_parameter("vehicles_config_file", "config/vehicles.json")
         self.declare_parameter("map_config_file", "config/city_map.json")
-        self.declare_parameter("linear_speed", 0.7)
-        self.declare_parameter("angular_k", 1.8)
-        self.declare_parameter("target_tolerance", 0.8)
+        self.declare_parameter("min_goal_interval_sec", 6.0)
+        self.declare_parameter("max_goal_interval_sec", 14.0)
+        self.declare_parameter("private_car_max_speed", 2.0)
 
-        self.vehicles_file = self.get_parameter("vehicles_config_file").value
-        self.map_file = self.get_parameter("map_config_file").value
+        self.vehicles_config_file = self.get_parameter("vehicles_config_file").value
+        self.map_config_file = self.get_parameter("map_config_file").value
 
-        self.linear_speed = float(self.get_parameter("linear_speed").value)
-        self.angular_k = float(self.get_parameter("angular_k").value)
-        self.target_tolerance = float(self.get_parameter("target_tolerance").value)
+        self.min_goal_interval_sec = float(
+            self.get_parameter("min_goal_interval_sec").value
+        )
+        self.max_goal_interval_sec = float(
+            self.get_parameter("max_goal_interval_sec").value
+        )
+        self.private_car_max_speed = float(
+            self.get_parameter("private_car_max_speed").value
+        )
 
         self.nodes = {}
         self.edges = []
-        self.adj = {}
-
         self.private_cars = {}
-        self.cmd_publishers = {}
+        self.action_clients = {}
 
         self.load_map()
         self.load_private_cars()
 
-        self.timer = self.create_timer(0.1, self.loop)
+        self.timer = self.create_timer(1.0, self.loop)
 
         self.get_logger().info(
-            f"private_car_simulator_node avviato con {len(self.private_cars)} auto private"
+            f"private_car_simulator_node avviato: {len(self.private_cars)} auto private"
         )
 
     # ------------------------------------------------------------------
@@ -70,28 +76,19 @@ class PrivateCarSimulatorNode(Node):
             return json.load(f)
 
     def load_map(self):
-        data = self.load_json(self.map_file)
+        data = self.load_json(self.map_config_file)
 
         for node in data["nodes"]:
             self.nodes[node["id"]] = {
+                "id": node["id"],
                 "x": float(node["x"]),
                 "y": float(node["y"])
             }
 
         self.edges = data["edges"]
 
-        for node_id in self.nodes:
-            self.adj[node_id] = []
-
-        for edge in self.edges:
-            a = edge["from"]
-            b = edge["to"]
-
-            self.adj[a].append(b)
-            self.adj[b].append(a)
-
     def load_private_cars(self):
-        data = self.load_json(self.vehicles_file)
+        data = self.load_json(self.vehicles_config_file)
 
         for vehicle in data["vehicles"]:
             if vehicle.get("type") != "PRIVATE_CAR":
@@ -99,20 +96,13 @@ class PrivateCarSimulatorNode(Node):
 
             vehicle_id = vehicle["id"]
 
-            car = PrivateCar(vehicle_id)
+            car = PrivateCarState(vehicle_id)
 
             spawn = vehicle.get("spawn", {})
             car.x = float(spawn.get("x", 0.0))
             car.y = float(spawn.get("y", 0.0))
-            car.yaw = float(spawn.get("yaw", 0.0))
 
             self.private_cars[vehicle_id] = car
-
-            self.cmd_publishers[vehicle_id] = self.create_publisher(
-                Twist,
-                f"/{vehicle_id}/cmd_vel",
-                10
-            )
 
             self.create_subscription(
                 Odometry,
@@ -121,10 +111,18 @@ class PrivateCarSimulatorNode(Node):
                 10
             )
 
-            self.assign_new_route(car)
+            self.action_clients[vehicle_id] = ActionClient(
+                self,
+                NavigateToPose,
+                f"/{vehicle_id}/navigation_executor/navigate_to_pose"
+            )
+
+            self.get_logger().info(
+                f"{vehicle_id}: registrata come auto privata"
+            )
 
     # ------------------------------------------------------------------
-    # CALLBACK ODOM
+    # CALLBACK
     # ------------------------------------------------------------------
 
     def on_odom(self, msg, vehicle_id):
@@ -136,121 +134,159 @@ class PrivateCarSimulatorNode(Node):
         car.x = msg.pose.pose.position.x
         car.y = msg.pose.pose.position.y
 
-        q = msg.pose.pose.orientation
-
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-
-        car.yaw = math.atan2(siny_cosp, cosy_cosp)
-
     # ------------------------------------------------------------------
-    # LOGICA
+    # LOOP
     # ------------------------------------------------------------------
 
     def loop(self):
+        now = time.time()
+
         for car in self.private_cars.values():
-            self.update_car(car)
+            if car.busy:
+                continue
 
-    def update_car(self, car):
-        if not car.route:
-            self.assign_new_route(car)
+            elapsed = now - car.last_goal_time
+
+            if elapsed < self.min_goal_interval_sec:
+                continue
+
+            if elapsed < random.uniform(
+                self.min_goal_interval_sec,
+                self.max_goal_interval_sec
+            ):
+                continue
+
+            target = self.choose_random_road_point(car)
+
+            self.send_goal(car, target)
+
+    # ------------------------------------------------------------------
+    # GOAL ACTION
+    # ------------------------------------------------------------------
+
+    def send_goal(self, car, target):
+        client = self.action_clients[car.vehicle_id]
+
+        if not client.wait_for_server(timeout_sec=0.2):
+            self.get_logger().warn(
+                f"{car.vehicle_id}: navigation_executor non disponibile"
+            )
             return
 
-        if car.target_index >= len(car.route):
-            self.assign_new_route(car)
-            return
+        goal = NavigateToPose.Goal()
+        goal.vehicle_id = car.vehicle_id
+        goal.mission_id = f"private_car_{car.vehicle_id}_{int(time.time())}"
+        goal.target_type = "PRIVATE_RANDOM_ROAD_TARGET"
+        goal.target_x = float(target["x"])
+        goal.target_y = float(target["y"])
+        goal.max_speed = float(self.private_car_max_speed)
 
-        target_node_id = car.route[car.target_index]
-        target = self.nodes[target_node_id]
-
-        dx = target["x"] - car.x
-        dy = target["y"] - car.y
-
-        distance = math.sqrt(dx * dx + dy * dy)
-
-        if distance <= self.target_tolerance:
-            car.target_index += 1
-
-            if car.target_index >= len(car.route):
-                self.assign_new_route(car)
-
-            return
-
-        self.drive_towards(car, target["x"], target["y"])
-
-    def assign_new_route(self, car):
-        start = self.find_nearest_node(car.x, car.y)
-
-        if start is None:
-            return
-
-        route = [start]
-        current = start
-
-        steps = random.randint(3, 8)
-
-        for _ in range(steps):
-            neighbors = self.adj.get(current, [])
-
-            if not neighbors:
-                break
-
-            current = random.choice(neighbors)
-            route.append(current)
-
-        car.route = route
-        car.target_index = 1 if len(route) > 1 else 0
+        car.busy = True
         car.last_goal_time = time.time()
 
         self.get_logger().info(
-            f"{car.vehicle_id}: nuova route casuale {car.route}"
+            f"{car.vehicle_id}: invio goal verso "
+            f"({goal.target_x:.2f}, {goal.target_y:.2f})"
         )
 
-    def drive_towards(self, car, target_x, target_y):
-        dx = target_x - car.x
-        dy = target_y - car.y
+        future = client.send_goal_async(goal)
+        future.add_done_callback(
+            lambda fut, vid=car.vehicle_id: self.on_goal_response(fut, vid)
+        )
 
-        target_angle = math.atan2(dy, dx)
-        angle_error = self.normalize_angle(target_angle - car.yaw)
+    def on_goal_response(self, future, vehicle_id):
+        car = self.private_cars[vehicle_id]
 
-        cmd = Twist()
+        try:
+            goal_handle = future.result()
+        except Exception as ex:
+            car.busy = False
+            self.get_logger().error(
+                f"{vehicle_id}: errore invio goal: {ex}"
+            )
+            return
 
-        if abs(angle_error) > 0.7:
-            cmd.linear.x = 0.0
-        else:
-            cmd.linear.x = self.linear_speed
+        if not goal_handle.accepted:
+            car.busy = False
+            self.get_logger().warn(
+                f"{vehicle_id}: goal rifiutato"
+            )
+            return
 
-        cmd.angular.z = self.angular_k * angle_error
+        car.goal_handle = goal_handle
 
-        self.cmd_publishers[car.vehicle_id].publish(cmd)
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda fut, vid=vehicle_id: self.on_goal_result(fut, vid)
+        )
+
+    def on_goal_result(self, future, vehicle_id):
+        car = self.private_cars[vehicle_id]
+        car.busy = False
+        car.last_goal_time = time.time()
+
+        try:
+            result = future.result().result
+        except Exception as ex:
+            self.get_logger().error(
+                f"{vehicle_id}: errore risultato goal: {ex}"
+            )
+            return
+
+        self.get_logger().info(
+            f"{vehicle_id}: goal concluso success={result.success}, "
+            f"message='{result.message}'"
+        )
 
     # ------------------------------------------------------------------
-    # UTILITY
+    # TARGET SELECTION
     # ------------------------------------------------------------------
 
-    def find_nearest_node(self, x, y):
-        best_node = None
-        best_distance = float("inf")
+    def choose_random_road_point(self, car):
+        edge = random.choice(self.edges)
 
-        for node_id, node in self.nodes.items():
-            dx = node["x"] - x
-            dy = node["y"] - y
-            d = math.sqrt(dx * dx + dy * dy)
+        from_node = self.nodes[edge["from"]]
+        to_node = self.nodes[edge["to"]]
 
-            if d < best_distance:
-                best_distance = d
-                best_node = node_id
+        t = random.uniform(0.20, 0.80)
 
-        return best_node
+        center_x = from_node["x"] + (to_node["x"] - from_node["x"]) * t
+        center_y = from_node["y"] + (to_node["y"] - from_node["y"]) * t
 
-    def normalize_angle(self, angle):
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
+        lane_x, lane_y = self.apply_right_lane_offset(
+            center_x,
+            center_y,
+            from_node["x"],
+            from_node["y"],
+            to_node["x"],
+            to_node["y"]
+        )
 
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
+        return {
+            "x": lane_x,
+            "y": lane_y,
+            "edge_id": edge["id"]
+        }
 
-        return angle
+    def apply_right_lane_offset(self, x, y, from_x, from_y, to_x, to_y):
+        dx = to_x - from_x
+        dy = to_y - from_y
+
+        length = math.sqrt(dx * dx + dy * dy)
+
+        if length <= 0.000001:
+            return x, y
+
+        ux = dx / length
+        uy = dy / length
+
+        right_x = uy
+        right_y = -ux
+
+        lane_width = 1.2
+        offset = lane_width * 0.5
+
+        return x + right_x * offset, y + right_y * offset
 
 
 def main(args=None):
@@ -262,9 +298,6 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-
-    for publisher in node.cmd_publishers.values():
-        publisher.publish(Twist())
 
     node.destroy_node()
     rclpy.shutdown()

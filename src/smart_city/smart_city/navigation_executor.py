@@ -2,28 +2,22 @@ import json
 import math
 import os
 import heapq
-import time
 from enum import Enum
 
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionServer
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
 
 from smart_city_interfaces.action import NavigateToPose
 
 
-class ExecutorState(str, Enum):
+class ExecutorState(Enum):
     IDLE = "IDLE"
     NAVIGATING = "NAVIGATING"
-    BLOCKED = "BLOCKED"
-    WAITING_TRAFFIC_LIGHT = "WAITING_TRAFFIC_LIGHT"
-    GOAL_REACHED = "GOAL_REACHED"
-    FAILED = "FAILED"
 
 
 class NavigationExecutor(Node):
@@ -31,57 +25,49 @@ class NavigationExecutor(Node):
     def __init__(self):
         super().__init__("navigation_executor")
 
-        self.declare_parameter("vehicle_id", "bus_1")
+        self.declare_parameter("vehicle_id", "vehicle")
         self.declare_parameter("map_config_file", "config/city_map.json")
-        self.declare_parameter("position_tolerance", 0.35)
-        self.declare_parameter("waypoint_tolerance", 0.45)
-        self.declare_parameter("obstacle_distance_threshold", 0.8)
-        self.declare_parameter("linear_k", 0.8)
-        self.declare_parameter("angular_k", 0.8)
-        self.declare_parameter("default_max_speed", 1.0)
-        self.declare_parameter("traffic_light_distance", 2.0)
+
+        self.declare_parameter("default_max_speed", 2.8)
+        self.declare_parameter("linear_k", 2.0)
+        self.declare_parameter("angular_k", 1.4)
+        self.declare_parameter("max_angular_speed", 0.75)
+
+        self.declare_parameter("waypoint_tolerance", 0.75)
+        self.declare_parameter("target_tolerance", 0.85)
+        self.declare_parameter("lane_offset_ratio", 0.5)
 
         self.vehicle_id = self.get_parameter("vehicle_id").value
-        self.position_tolerance = float(self.get_parameter("position_tolerance").value)
-        self.waypoint_tolerance = float(self.get_parameter("waypoint_tolerance").value)
-        self.obstacle_distance_threshold = float(self.get_parameter("obstacle_distance_threshold").value)
+        self.map_config_file = self.get_parameter("map_config_file").value
+
+        self.default_max_speed = float(self.get_parameter("default_max_speed").value)
         self.linear_k = float(self.get_parameter("linear_k").value)
         self.angular_k = float(self.get_parameter("angular_k").value)
-        self.default_max_speed = float(self.get_parameter("default_max_speed").value)
-        self.traffic_light_distance = float(self.get_parameter("traffic_light_distance").value)
+        self.max_angular_speed = float(self.get_parameter("max_angular_speed").value)
+
+        self.waypoint_tolerance = float(self.get_parameter("waypoint_tolerance").value)
+        self.target_tolerance = float(self.get_parameter("target_tolerance").value)
+        self.lane_offset_ratio = float(self.get_parameter("lane_offset_ratio").value)
 
         self.state = ExecutorState.IDLE
 
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_yaw = 0.0
-        self.last_scan = None
 
         self.nodes = {}
         self.edges = []
+        self.edge_by_id = {}
         self.adj = {}
         self.lane_width = 1.2
+        self.default_map_speed_limit = 1.4
+
+        self.current_path = []
+        self.current_waypoint_index = 0
 
         self.load_map()
 
-        self.current_route_points = []
-        self.current_route_edges = []
-        self.route_index = 0
-
-        self.traffic_lights = {}
-        self.priority_sent = set()
-
-        self.cmd_vel_pub = self.create_publisher(
-            Twist,
-            "/cmd_vel",
-            10
-        )
-
-        self.priority_request_pub = self.create_publisher(
-            String,
-            "/traffic_light/priority_request",
-            10
-        )
+        self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
 
         self.odom_sub = self.create_subscription(
             Odometry,
@@ -97,18 +83,13 @@ class NavigationExecutor(Node):
             10
         )
 
-        self.traffic_light_status_sub = self.create_subscription(
-            String,
-            "/traffic_light/status",
-            self.on_traffic_light_status,
-            10
-        )
-
         self.action_server = ActionServer(
             self,
             NavigateToPose,
             "/navigation_executor/navigate_to_pose",
-            self.execute_callback
+            execute_callback=self.execute_callback,
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback
         )
 
         self.get_logger().info(
@@ -120,18 +101,19 @@ class NavigationExecutor(Node):
     # ------------------------------------------------------------------
 
     def load_map(self):
-        file_path = self.get_parameter("map_config_file").value
+        path = self.map_config_file
 
-        if not os.path.isabs(file_path):
-            file_path = os.path.join(os.getcwd(), file_path)
+        if not os.path.isabs(path):
+            path = os.path.join(os.getcwd(), path)
 
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Mappa non trovata: {file_path}")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File mappa non trovato: {path}")
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         self.lane_width = float(data.get("lane_width", 1.2))
+        self.default_map_speed_limit = float(data.get("default_speed_limit", 1.4))
 
         for node in data["nodes"]:
             self.nodes[node["id"]] = {
@@ -140,39 +122,39 @@ class NavigationExecutor(Node):
                 "y": float(node["y"])
             }
 
-        self.edges = data["edges"]
+        for edge in data["edges"]:
+            edge_id = edge["id"]
+            from_id = edge["from"]
+            to_id = edge["to"]
 
-        for node_id in self.nodes:
-            self.adj[node_id] = []
+            a = self.nodes[from_id]
+            b = self.nodes[to_id]
 
-        for edge in self.edges:
-            a = edge["from"]
-            b = edge["to"]
-            speed_limit = float(edge.get("speed_limit", self.default_max_speed))
-            distance = self.distance_between_nodes(a, b)
+            length = self.distance_xy(a["x"], a["y"], b["x"], b["y"])
 
-            self.adj[a].append({
-                "to": b,
-                "edge_id": edge["id"],
-                "distance": distance,
-                "speed_limit": speed_limit
-            })
+            e = {
+                "id": edge_id,
+                "from": from_id,
+                "to": to_id,
+                "speed_limit": float(edge.get("speed_limit", self.default_map_speed_limit)),
+                "length": length
+            }
 
-            self.adj[b].append({
-                "to": a,
-                "edge_id": edge["id"],
-                "distance": distance,
-                "speed_limit": speed_limit
-            })
+            self.edges.append(e)
+            self.edge_by_id[edge_id] = e
 
-    def node_degree(self, node_id):
-        return len(self.adj.get(node_id, []))
+            self.adj.setdefault(from_id, [])
+            self.adj.setdefault(to_id, [])
 
-    def has_traffic_light(self, node_id):
-        return self.node_degree(node_id) >= 3
+            self.adj[from_id].append((to_id, edge_id, length))
+            self.adj[to_id].append((from_id, edge_id, length))
+
+        self.get_logger().info(
+            f"mappa caricata: {len(self.nodes)} nodi, {len(self.edges)} archi"
+        )
 
     # ------------------------------------------------------------------
-    # SENSORI
+    # CALLBACK
     # ------------------------------------------------------------------
 
     def on_odom(self, msg):
@@ -187,244 +169,251 @@ class NavigationExecutor(Node):
         self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def on_scan(self, msg):
-        self.last_scan = msg
-
-    def on_traffic_light_status(self, msg):
-        try:
-            data = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-
-        node_id = data.get("node_id")
-
-        if node_id is None:
-            return
-
-        self.traffic_lights[node_id] = data
+        pass
 
     # ------------------------------------------------------------------
     # ACTION
     # ------------------------------------------------------------------
 
-    def execute_callback(self, goal_handle):
+    def goal_callback(self, goal_request):
+        self.get_logger().info(
+            f"{self.vehicle_id}: ricevuto goal "
+            f"mission={goal_request.mission_id}, "
+            f"target=({goal_request.target_x:.2f}, {goal_request.target_y:.2f})"
+        )
+
+        return GoalResponse.ACCEPT
+
+    def cancel_callback(self, goal_handle):
+        self.get_logger().info(f"{self.vehicle_id}: cancellazione richiesta")
+        return CancelResponse.ACCEPT
+
+    async def execute_callback(self, goal_handle):
         goal = goal_handle.request
-
-        if goal.vehicle_id != self.vehicle_id:
-            goal_handle.abort()
-
-            result = NavigateToPose.Result()
-            result.success = False
-            result.message = f"Goal destinato a {goal.vehicle_id}, non a {self.vehicle_id}"
-            return result
-
-        target_edge = self.find_edge_containing_point(goal.target_x, goal.target_y)
-
-        if target_edge is None:
-            goal_handle.abort()
-
-            result = NavigateToPose.Result()
-            result.success = False
-            result.message = "Target non appartenente ad alcuna strada"
-            return result
-
-        start_edge = self.find_edge_containing_point(self.current_x, self.current_y)
-
-        if start_edge is None:
-            start_node = self.find_nearest_node(self.current_x, self.current_y)
-        else:
-            start_node = self.closest_endpoint_of_edge(start_edge, self.current_x, self.current_y)
-
-        target_entry_node = self.closest_endpoint_of_edge(
-            target_edge,
-            goal.target_x,
-            goal.target_y
-        )
-
-        node_route = self.compute_node_route(start_node, target_entry_node)
-
-        if len(node_route) == 0:
-            goal_handle.abort()
-
-            result = NavigateToPose.Result()
-            result.success = False
-            result.message = "Nessun percorso trovato"
-            return result
-
-        self.current_route_points = self.build_route_points(
-            node_route,
-            goal.target_x,
-            goal.target_y
-        )
-
-        self.current_route_edges = self.build_route_edges(node_route, target_edge)
-        self.route_index = 0
-        self.priority_sent.clear()
 
         self.state = ExecutorState.NAVIGATING
 
-        feedback = NavigateToPose.Feedback()
+        try:
+            self.current_path = self.build_navigation_path(
+                self.current_x,
+                self.current_y,
+                goal.target_x,
+                goal.target_y
+            )
+
+            self.current_waypoint_index = 0
+
+            self.get_logger().info(
+                f"{self.vehicle_id}: path calcolato con {len(self.current_path)} waypoint"
+            )
+
+            for i, wp in enumerate(self.current_path):
+                self.get_logger().info(
+                    f"{self.vehicle_id}: wp[{i}] "
+                    f"({wp['x']:.2f}, {wp['y']:.2f}) "
+                    f"edge={wp.get('edge_id')} node={wp.get('node_id')}"
+                )
+
+        except Exception as ex:
+            self.stop_vehicle()
+            self.state = ExecutorState.IDLE
+            goal_handle.abort()
+
+            result = NavigateToPose.Result()
+            result.success = False
+            result.message = f"Errore calcolo path: {ex}"
+            return result
+
+        rate = self.create_rate(20)
 
         while rclpy.ok():
             if goal_handle.is_cancel_requested:
                 self.stop_vehicle()
+                self.state = ExecutorState.IDLE
                 goal_handle.canceled()
 
                 result = NavigateToPose.Result()
                 result.success = False
                 result.message = "Navigazione cancellata"
-
-                self.state = ExecutorState.IDLE
                 return result
 
-            target_point = self.current_route_points[self.route_index]
-            distance = self.distance_to_point(target_point["x"], target_point["y"])
-
-            feedback.current_x = self.current_x
-            feedback.current_y = self.current_y
-            feedback.distance_remaining = self.remaining_route_distance()
-            feedback.status = self.state.value
-
-            goal_handle.publish_feedback(feedback)
-
-            is_final_point = self.route_index == len(self.current_route_points) - 1
-
-            if is_final_point and distance <= self.position_tolerance:
+            if self.current_waypoint_index >= len(self.current_path):
                 self.stop_vehicle()
+                self.state = ExecutorState.IDLE
                 goal_handle.succeed()
 
                 result = NavigateToPose.Result()
                 result.success = True
                 result.message = "Target raggiunto"
-
-                self.state = ExecutorState.IDLE
                 return result
 
-            if not is_final_point and distance <= self.waypoint_tolerance:
-                self.route_index += 1
+            current_wp = self.current_path[self.current_waypoint_index]
+
+            dx = current_wp["x"] - self.current_x
+            dy = current_wp["y"] - self.current_y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            is_last = self.current_waypoint_index == len(self.current_path) - 1
+            tolerance = self.target_tolerance if is_last else self.waypoint_tolerance
+
+            if distance <= tolerance:
+                self.current_waypoint_index += 1
                 continue
 
-            if self.has_front_obstacle():
-                self.state = ExecutorState.BLOCKED
-                self.stop_vehicle()
-                time.sleep(0.1)
-                continue
+            self.move_towards_waypoint(current_wp, goal.max_speed)
 
-            upcoming_node = self.get_upcoming_intersection_node()
+            feedback = NavigateToPose.Feedback()
+            feedback.current_x = float(self.current_x)
+            feedback.current_y = float(self.current_y)
+            feedback.distance_remaining = float(self.compute_remaining_distance())
+            feedback.status = (
+                f"wp {self.current_waypoint_index + 1}/{len(self.current_path)}"
+            )
 
-            if upcoming_node is not None:
-                self.send_priority_request_if_needed(goal, upcoming_node)
+            goal_handle.publish_feedback(feedback)
 
-                if self.must_wait_for_traffic_light(upcoming_node):
-                    self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
-                    self.stop_vehicle()
-                    time.sleep(0.1)
-                    continue
-
-            self.state = ExecutorState.NAVIGATING
-            self.move_towards_point(target_point, goal.max_speed)
-
-            time.sleep(0.05)
+            rate.sleep()
 
         self.stop_vehicle()
+        self.state = ExecutorState.IDLE
         goal_handle.abort()
 
         result = NavigateToPose.Result()
         result.success = False
-        result.message = "ROS shutdown"
-
+        result.message = "Navigazione interrotta"
         return result
 
     # ------------------------------------------------------------------
-    # COSTRUZIONE PERCORSO
+    # PATH PLANNING SU GRAFO
     # ------------------------------------------------------------------
 
-    def build_route_points(self, node_route, target_x, target_y):
-        points = []
+    def build_navigation_path(self, start_x, start_y, target_x, target_y):
+        start_projection = self.find_nearest_edge_projection(start_x, start_y)
+        target_projection = self.find_nearest_edge_projection(target_x, target_y)
 
-        for node_id in node_route:
-            node = self.nodes[node_id]
-            points.append({
-                "kind": "NODE_PASSAGE",
-                "node_id": node_id,
-                "x": node["x"],
-                "y": node["y"]
-            })
+        start_edge = start_projection["edge"]
+        target_edge = target_projection["edge"]
 
-        points.append({
-            "kind": "FINAL_TARGET",
+        start_candidates = [start_edge["from"], start_edge["to"]]
+        target_candidates = [target_edge["from"], target_edge["to"]]
+
+        best_node_path = None
+        best_cost = float("inf")
+
+        for s in start_candidates:
+            for t in target_candidates:
+                node_path, cost = self.shortest_path(s, t)
+
+                cost += self.distance_to_node_on_edge(start_projection, s)
+                cost += self.distance_to_node_on_edge(target_projection, t)
+
+                if node_path and cost < best_cost:
+                    best_cost = cost
+                    best_node_path = node_path
+
+        if not best_node_path:
+            raise RuntimeError("nessun path trovato sul grafo")
+
+        waypoints = []
+
+        start_lane = self.project_point_to_lane(
+            start_projection,
+            best_node_path[0]
+        )
+
+        waypoints.append({
+            "x": start_lane["x"],
+            "y": start_lane["y"],
+            "edge_id": start_edge["id"],
             "node_id": None,
-            "x": target_x,
-            "y": target_y
+            "speed_limit": start_edge["speed_limit"]
         })
 
-        return points
+        for i in range(len(best_node_path) - 1):
+            current_node_id = best_node_path[i]
+            next_node_id = best_node_path[i + 1]
 
-    def build_route_edges(self, node_route, target_edge):
-        route_edges = []
+            current_node = self.nodes[current_node_id]
+            edge = self.get_edge_between(current_node_id, next_node_id)
 
-        for i in range(len(node_route) - 1):
-            edge = self.get_edge_between(node_route[i], node_route[i + 1])
-            route_edges.append(edge)
+            lane_point = self.node_to_lane_point(
+                current_node_id,
+                next_node_id,
+                approach=False
+            )
 
-        route_edges.append(target_edge)
+            waypoints.append({
+                "x": lane_point["x"],
+                "y": lane_point["y"],
+                "edge_id": edge["id"],
+                "node_id": current_node_id,
+                "speed_limit": edge["speed_limit"]
+            })
 
-        return route_edges
+            exit_point = self.node_to_lane_point(
+                next_node_id,
+                current_node_id,
+                approach=True
+            )
 
-    def compute_node_route(self, start_node, target_node):
-        queue = []
-        heapq.heappush(queue, (0.0, start_node))
+            waypoints.append({
+                "x": exit_point["x"],
+                "y": exit_point["y"],
+                "edge_id": edge["id"],
+                "node_id": next_node_id,
+                "speed_limit": edge["speed_limit"]
+            })
 
-        distances = {node_id: float("inf") for node_id in self.nodes}
-        previous = {node_id: None for node_id in self.nodes}
+        target_lane = self.project_point_to_lane(
+            target_projection,
+            best_node_path[-1]
+        )
 
-        distances[start_node] = 0.0
+        waypoints.append({
+            "x": target_lane["x"],
+            "y": target_lane["y"],
+            "edge_id": target_edge["id"],
+            "node_id": None,
+            "speed_limit": target_edge["speed_limit"]
+        })
+
+        return self.simplify_waypoints(waypoints)
+
+    def shortest_path(self, start_node_id, target_node_id):
+        queue = [(0.0, start_node_id, [])]
+        visited = set()
 
         while queue:
-            current_distance, current = heapq.heappop(queue)
+            cost, node_id, path = heapq.heappop(queue)
 
-            if current == target_node:
-                break
-
-            if current_distance > distances[current]:
+            if node_id in visited:
                 continue
 
-            for edge in self.adj[current]:
-                neighbor = edge["to"]
-                new_distance = current_distance + edge["distance"]
+            visited.add(node_id)
 
-                if new_distance < distances[neighbor]:
-                    distances[neighbor] = new_distance
-                    previous[neighbor] = current
-                    heapq.heappush(queue, (new_distance, neighbor))
+            new_path = path + [node_id]
 
-        if distances[target_node] == float("inf"):
-            return []
+            if node_id == target_node_id:
+                return new_path, cost
 
-        route = []
-        current = target_node
+            for neighbor_id, edge_id, length in self.adj.get(node_id, []):
+                if neighbor_id not in visited:
+                    heapq.heappush(
+                        queue,
+                        (cost + length, neighbor_id, new_path)
+                    )
 
-        while current is not None:
-            route.append(current)
-            current = previous[current]
+        return None, float("inf")
 
-        route.reverse()
-        return route
-
-    # ------------------------------------------------------------------
-    # STRADE / ARCHI
-    # ------------------------------------------------------------------
-
-    def find_edge_containing_point(self, x, y):
-        best_edge = None
+    def find_nearest_edge_projection(self, x, y):
+        best = None
         best_distance = float("inf")
-
-        max_distance_from_centerline = self.lane_width
 
         for edge in self.edges:
             a = self.nodes[edge["from"]]
             b = self.nodes[edge["to"]]
 
-            distance = self.distance_point_to_segment(
+            proj = self.project_point_on_segment(
                 x,
                 y,
                 a["x"],
@@ -433,295 +422,238 @@ class NavigationExecutor(Node):
                 b["y"]
             )
 
-            if distance < best_distance:
-                best_distance = distance
-                best_edge = edge
+            d = self.distance_xy(x, y, proj["x"], proj["y"])
 
-        if best_distance <= max_distance_from_centerline:
-            return best_edge
+            if d < best_distance:
+                best_distance = d
+                best = {
+                    "edge": edge,
+                    "x": proj["x"],
+                    "y": proj["y"],
+                    "t": proj["t"],
+                    "distance": d
+                }
 
-        return None
+        return best
 
-    def closest_endpoint_of_edge(self, edge, x, y):
+    def project_point_on_segment(self, px, py, ax, ay, bx, by):
+        dx = bx - ax
+        dy = by - ay
+
+        denom = dx * dx + dy * dy
+
+        if denom <= 0.000001:
+            return {"x": ax, "y": ay, "t": 0.0}
+
+        t = ((px - ax) * dx + (py - ay) * dy) / denom
+        t = max(0.0, min(1.0, t))
+
+        return {
+            "x": ax + t * dx,
+            "y": ay + t * dy,
+            "t": t
+        }
+
+    def project_point_to_lane(self, projection, destination_node_id):
+        edge = projection["edge"]
+
         a = self.nodes[edge["from"]]
         b = self.nodes[edge["to"]]
 
-        da = math.sqrt((x - a["x"]) ** 2 + (y - a["y"]) ** 2)
-        db = math.sqrt((x - b["x"]) ** 2 + (y - b["y"]) ** 2)
+        if destination_node_id == edge["to"]:
+            from_node = a
+            to_node = b
+        else:
+            from_node = b
+            to_node = a
 
-        if da <= db:
-            return edge["from"]
+        lane_x, lane_y = self.apply_right_lane_offset(
+            projection["x"],
+            projection["y"],
+            from_node["x"],
+            from_node["y"],
+            to_node["x"],
+            to_node["y"]
+        )
 
-        return edge["to"]
+        return {"x": lane_x, "y": lane_y}
+
+    def node_to_lane_point(self, node_id, other_node_id, approach):
+        node = self.nodes[node_id]
+        other = self.nodes[other_node_id]
+
+        dx = other["x"] - node["x"]
+        dy = other["y"] - node["y"]
+
+        length = math.sqrt(dx * dx + dy * dy)
+
+        if length <= 0.000001:
+            return {"x": node["x"], "y": node["y"]}
+
+        ux = dx / length
+        uy = dy / length
+
+        intersection_clearance = 2.2
+
+        if approach:
+            base_x = node["x"] + ux * intersection_clearance
+            base_y = node["y"] + uy * intersection_clearance
+        else:
+            base_x = node["x"] + ux * intersection_clearance
+            base_y = node["y"] + uy * intersection_clearance
+
+        lane_x, lane_y = self.apply_right_lane_offset(
+            base_x,
+            base_y,
+            node["x"],
+            node["y"],
+            other["x"],
+            other["y"]
+        )
+
+        return {"x": lane_x, "y": lane_y}
+
+    def apply_right_lane_offset(self, x, y, from_x, from_y, to_x, to_y):
+        dx = to_x - from_x
+        dy = to_y - from_y
+
+        length = math.sqrt(dx * dx + dy * dy)
+
+        if length <= 0.000001:
+            return x, y
+
+        ux = dx / length
+        uy = dy / length
+
+        right_x = uy
+        right_y = -ux
+
+        offset = self.lane_width * self.lane_offset_ratio
+
+        return x + right_x * offset, y + right_y * offset
+
+    def distance_to_node_on_edge(self, projection, node_id):
+        node = self.nodes[node_id]
+        return self.distance_xy(
+            projection["x"],
+            projection["y"],
+            node["x"],
+            node["y"]
+        )
 
     def get_edge_between(self, a, b):
         for edge in self.edges:
             if edge["from"] == a and edge["to"] == b:
                 return edge
-
             if edge["from"] == b and edge["to"] == a:
                 return edge
 
-        return None
+        raise RuntimeError(f"nessun edge tra {a} e {b}")
 
-    def distance_between_nodes(self, a, b):
-        na = self.nodes[a]
-        nb = self.nodes[b]
+    def simplify_waypoints(self, waypoints):
+        if not waypoints:
+            return []
 
-        return math.sqrt(
-            (nb["x"] - na["x"]) ** 2 +
-            (nb["y"] - na["y"]) ** 2
-        )
+        result = [waypoints[0]]
 
-    def distance_point_to_segment(self, px, py, ax, ay, bx, by):
-        abx = bx - ax
-        aby = by - ay
+        for wp in waypoints[1:]:
+            last = result[-1]
+            d = self.distance_xy(last["x"], last["y"], wp["x"], wp["y"])
 
-        apx = px - ax
-        apy = py - ay
+            if d >= 0.4:
+                result.append(wp)
 
-        ab_len_sq = abx * abx + aby * aby
-
-        if ab_len_sq == 0:
-            return math.sqrt((px - ax) ** 2 + (py - ay) ** 2)
-
-        t = (apx * abx + apy * aby) / ab_len_sq
-        t = max(0.0, min(1.0, t))
-
-        closest_x = ax + t * abx
-        closest_y = ay + t * aby
-
-        return math.sqrt(
-            (px - closest_x) ** 2 +
-            (py - closest_y) ** 2
-        )
+        return result
 
     # ------------------------------------------------------------------
-    # SEMAFORI
+    # CONTROLLO MOVIMENTO
     # ------------------------------------------------------------------
 
-    def get_upcoming_intersection_node(self):
-        if self.route_index >= len(self.current_route_points):
-            return None
-
-        point = self.current_route_points[self.route_index]
-
-        if point["kind"] != "NODE_PASSAGE":
-            return None
-
-        node_id = point["node_id"]
-
-        if not self.has_traffic_light(node_id):
-            return None
-
-        distance = self.distance_to_point(point["x"], point["y"])
-
-        if distance <= self.traffic_light_distance:
-            return node_id
-
-        return None
-
-    def send_priority_request_if_needed(self, goal, node_id):
-        if goal.target_type == "PARKING":
-            return
-
-        if node_id in self.priority_sent:
-            return
-
-        movement = self.get_current_movement_through_node(node_id)
-
-        payload = {
-            "vehicle_id": self.vehicle_id,
-            "mission_id": goal.mission_id,
-            "target_type": goal.target_type,
-            "node_id": node_id,
-            "from_node_id": movement["from"],
-            "to_node_id": movement["to"],
-            "priority": self.compute_priority(goal)
-        }
-
-        msg = String()
-        msg.data = json.dumps(payload)
-
-        self.priority_request_pub.publish(msg)
-        self.priority_sent.add(node_id)
-
-    def must_wait_for_traffic_light(self, node_id):
-        status = self.traffic_lights.get(node_id)
-
-        if status is None:
-            return False
-
-        movement = self.get_current_movement_through_node(node_id)
-
-        allowed_movements = status.get("allowed_movements", [])
-
-        for allowed in allowed_movements:
-            if allowed.get("from") == movement["from"] and allowed.get("to") == movement["to"]:
-                return False
-
-        return True
-
-    def get_current_movement_through_node(self, node_id):
-        previous_node = None
-        next_node = None
-
-        for i, point in enumerate(self.current_route_points):
-            if point.get("node_id") == node_id:
-                if i > 0:
-                    previous_node = self.current_route_points[i - 1].get("node_id")
-
-                if i + 1 < len(self.current_route_points):
-                    next_node = self.current_route_points[i + 1].get("node_id")
-
-                break
-
-        return {
-            "from": previous_node,
-            "to": next_node
-        }
-
-    def compute_priority(self, goal):
-        if goal.target_type == "BUS_STOP":
-            return 3
-
-        if goal.target_type == "TAXI_PICKUP":
-            return 3
-
-        if goal.target_type == "TAXI_DROPOFF":
-            return 2
-
-        if goal.target_type == "WAYPOINT":
-            return 1
-
-        return 1
-
-    # ------------------------------------------------------------------
-    # MOVIMENTO
-    # ------------------------------------------------------------------
-
-    def move_towards_point(self, point, requested_max_speed):
-        dx = point["x"] - self.current_x
-        dy = point["y"] - self.current_y
+    def move_towards_waypoint(self, waypoint, requested_max_speed):
+        dx = waypoint["x"] - self.current_x
+        dy = waypoint["y"] - self.current_y
 
         target_angle = math.atan2(dy, dx)
         angle_error = self.normalize_angle(target_angle - self.current_yaw)
 
         distance = math.sqrt(dx * dx + dy * dy)
 
-        edge_speed_limit = self.get_current_speed_limit()
+        edge_speed_limit = float(
+            waypoint.get("speed_limit", self.default_map_speed_limit)
+        )
 
         max_speed = requested_max_speed
-
         if max_speed <= 0.0:
             max_speed = self.default_max_speed
 
-        max_speed = min(max_speed, edge_speed_limit)
+        max_speed = min(max_speed, edge_speed_limit * 2.0)
 
-        linear_speed = min(max_speed, self.linear_k * distance)
-        max_angular_speed = 1.0
+        angular_speed = self.angular_k * angle_error
         angular_speed = max(
-            -max_angular_speed,
-            min(max_angular_speed, self.angular_k * angle_error)
+            -self.max_angular_speed,
+            min(self.max_angular_speed, angular_speed)
         )
 
-        if abs(angle_error) > 0.7:
+        abs_error = abs(angle_error)
+
+        if abs_error > 2.6:
             linear_speed = 0.15
+        elif abs_error > 1.2:
+            linear_speed = 0.45
+        elif abs_error > 0.55:
+            linear_speed = 0.75
+        else:
+            linear_speed = min(max_speed, self.linear_k * distance)
+
+        if distance > 1.5 and linear_speed < 0.65:
+            linear_speed = 0.65
+
+        self.get_logger().info(
+            f"{self.vehicle_id}: "
+            f"wp={self.current_waypoint_index + 1}/{len(self.current_path)} "
+            f"target=({waypoint['x']:.2f},{waypoint['y']:.2f}) "
+            f"pos=({self.current_x:.2f},{self.current_y:.2f}) "
+            f"yaw={self.current_yaw:.2f} "
+            f"angle_error={angle_error:.2f} "
+            f"linear={linear_speed:.2f} angular={angular_speed:.2f}"
+        )
 
         cmd = Twist()
-        cmd.linear.x = linear_speed
-        cmd.angular.z = angular_speed
+        cmd.linear.x = float(linear_speed)
+        cmd.angular.z = float(angular_speed)
 
         self.cmd_vel_pub.publish(cmd)
-
-    def get_current_speed_limit(self):
-        if self.route_index >= len(self.current_route_edges):
-            return self.default_max_speed
-
-        edge = self.current_route_edges[self.route_index]
-
-        if edge is None:
-            return self.default_max_speed
-
-        return float(edge.get("speed_limit", self.default_max_speed))
 
     def stop_vehicle(self):
-        cmd = Twist()
-        cmd.linear.x = 0.0
-        cmd.angular.z = 0.0
-        self.cmd_vel_pub.publish(cmd)
-
-    # ------------------------------------------------------------------
-    # OSTACOLI
-    # ------------------------------------------------------------------
-
-    def has_front_obstacle(self):
-        if self.last_scan is None:
-            return False
-
-        ranges = list(self.last_scan.ranges)
-
-        if len(ranges) == 0:
-            return False
-
-        center = len(ranges) // 2
-        window = ranges[max(0, center - 10):min(len(ranges), center + 10)]
-
-        valid = [
-            r for r in window
-            if not math.isnan(r) and not math.isinf(r)
-        ]
-
-        if not valid:
-            return False
-
-        return min(valid) < self.obstacle_distance_threshold
+        self.cmd_vel_pub.publish(Twist())
 
     # ------------------------------------------------------------------
     # UTILITY
     # ------------------------------------------------------------------
 
-    def find_nearest_node(self, x, y):
-        best_node = None
-        best_distance = float("inf")
-
-        for node_id, node in self.nodes.items():
-            distance = math.sqrt(
-                (x - node["x"]) ** 2 +
-                (y - node["y"]) ** 2
-            )
-
-            if distance < best_distance:
-                best_distance = distance
-                best_node = node_id
-
-        return best_node
-
-    def distance_to_point(self, x, y):
-        return math.sqrt(
-            (x - self.current_x) ** 2 +
-            (y - self.current_y) ** 2
-        )
-
-    def remaining_route_distance(self):
-        if self.route_index >= len(self.current_route_points):
+    def compute_remaining_distance(self):
+        if not self.current_path:
             return 0.0
 
-        current_target = self.current_route_points[self.route_index]
+        if self.current_waypoint_index >= len(self.current_path):
+            return 0.0
 
-        total = self.distance_to_point(
-            current_target["x"],
-            current_target["y"]
-        )
+        total = 0.0
 
-        for i in range(self.route_index, len(self.current_route_points) - 1):
-            a = self.current_route_points[i]
-            b = self.current_route_points[i + 1]
+        current = {
+            "x": self.current_x,
+            "y": self.current_y
+        }
 
-            total += math.sqrt(
-                (b["x"] - a["x"]) ** 2 +
-                (b["y"] - a["y"]) ** 2
+        for i in range(self.current_waypoint_index, len(self.current_path)):
+            wp = self.current_path[i]
+            total += self.distance_xy(
+                current["x"],
+                current["y"],
+                wp["x"],
+                wp["y"]
             )
+            current = wp
 
         return total
 
@@ -734,6 +666,11 @@ class NavigationExecutor(Node):
 
         return angle
 
+    def distance_xy(self, x1, y1, x2, y2):
+        dx = x2 - x1
+        dy = y2 - y1
+        return math.sqrt(dx * dx + dy * dy)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -745,6 +682,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
 
+    node.stop_vehicle()
     node.destroy_node()
     rclpy.shutdown()
 

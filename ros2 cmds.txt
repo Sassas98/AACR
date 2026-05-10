@@ -1,11 +1,8 @@
-<build + run>
-# 1. carichi ROS
 source /opt/ros/jazzy/setup.bash
-# 2. vai nella workspace
 cd ~/AACR
-# 3. build
-colcon build
-# 4. attivi la workspace
-source install/setup.bash
-# 5. attivi il launcher
+rm -rf build
+rm -rf install
+rm -rf log
+colcon build --symlink-install
+source ~/AACR/install/setup.bash
 ros2 launch smart_city launch.py

@@ -6,31 +6,38 @@
     "clear_when_vehicle_stopped": true,
     "vehicle_stop_speed_threshold": 0.05
   },
-  "bus_stops": [
-    { "stop_id": "stop_A1", "path_id": "path_A", "x": -20.0, "y": 40.6, "spawn_probability": 0.35 },
-    { "stop_id": "stop_A2", "path_id": "path_A", "x": 0.0, "y": 40.6, "spawn_probability": 0.3 },
-    { "stop_id": "stop_A3", "path_id": "path_A", "x": 20.0, "y": 40.6, "spawn_probability": 0.25 },
-    { "stop_id": "stop_A4", "path_id": "path_A", "x": 40.0, "y": 20.6, "spawn_probability": 0.25 },
-    { "stop_id": "stop_A5", "path_id": "path_A", "x": 40.0, "y": 0.6, "spawn_probability": 0.35 },
-    { "stop_id": "stop_A6", "path_id": "path_A", "x": 0.0, "y": 0.6, "spawn_probability": 0.5 },
-    { "stop_id": "stop_A7", "path_id": "path_A", "x": -20.0, "y": 0.6, "spawn_probability": 0.4 },
-    { "stop_id": "stop_A8", "path_id": "path_A", "x": -40.0, "y": 20.6, "spawn_probability": 0.2 },
 
-    { "stop_id": "stop_B1", "path_id": "path_B", "x": -39.4, "y": -20.0, "spawn_probability": 0.3 },
-    { "stop_id": "stop_B2", "path_id": "path_B", "x": -39.4, "y": 0.0, "spawn_probability": 0.3 },
-    { "stop_id": "stop_B3", "path_id": "path_B", "x": -20.0, "y": 0.6, "spawn_probability": 0.45 },
-    { "stop_id": "stop_B4", "path_id": "path_B", "x": 0.0, "y": 0.6, "spawn_probability": 0.5 },
-    { "stop_id": "stop_B5", "path_id": "path_B", "x": 20.0, "y": -19.4, "spawn_probability": 0.35 },
+  "bus_stops": [
+
+    { "stop_id": "stop_A1", "path_id": "path_A", "x": -20.0, "y": 39.4, "spawn_probability": 0.35 },
+    { "stop_id": "stop_A2", "path_id": "path_A", "x": 0.0, "y": 39.4, "spawn_probability": 0.30 },
+    { "stop_id": "stop_A3", "path_id": "path_A", "x": 20.0, "y": 39.4, "spawn_probability": 0.25 },
+    { "stop_id": "stop_A4", "path_id": "path_A", "x": 39.4, "y": 20.0, "spawn_probability": 0.25 },
+    { "stop_id": "stop_A5", "path_id": "path_A", "x": 39.4, "y": 0.0, "spawn_probability": 0.35 },
+    { "stop_id": "stop_A6", "path_id": "path_A", "x": 0.0, "y": 0.0, "spawn_probability": 0.50 },
+    { "stop_id": "stop_A7", "path_id": "path_A", "x": -20.0, "y": 0.0, "spawn_probability": 0.40 },
+    { "stop_id": "stop_A8", "path_id": "path_A", "x": -39.4, "y": 20.0, "spawn_probability": 0.20 },
+
+
+
+    { "stop_id": "stop_B1", "path_id": "path_B", "x": -39.4, "y": -20.0, "spawn_probability": 0.30 },
+    { "stop_id": "stop_B2", "path_id": "path_B", "x": -39.4, "y": 0.0, "spawn_probability": 0.30 },
+    { "stop_id": "stop_B3", "path_id": "path_B", "x": -20.0, "y": 0.0, "spawn_probability": 0.45 },
+    { "stop_id": "stop_B4", "path_id": "path_B", "x": 0.0, "y": 0.0, "spawn_probability": 0.50 },
+    { "stop_id": "stop_B5", "path_id": "path_B", "x": 20.0, "y": -20.0, "spawn_probability": 0.35 },
     { "stop_id": "stop_B6", "path_id": "path_B", "x": 20.0, "y": -39.4, "spawn_probability": 0.25 },
     { "stop_id": "stop_B7", "path_id": "path_B", "x": -20.0, "y": -39.4, "spawn_probability": 0.25 },
 
-    { "stop_id": "stop_C1", "path_id": "path_C", "x": -20.6, "y": 20.0, "spawn_probability": 0.3 },
-    { "stop_id": "stop_C2", "path_id": "path_C", "x": -20.6, "y": 0.0, "spawn_probability": 0.35 },
-    { "stop_id": "stop_C3", "path_id": "path_C", "x": -20.6, "y": -20.0, "spawn_probability": 0.3 },
-    { "stop_id": "stop_C4", "path_id": "path_C", "x": 0.0, "y": -19.4, "spawn_probability": 0.35 },
-    { "stop_id": "stop_C5", "path_id": "path_C", "x": 20.0, "y": -19.4, "spawn_probability": 0.35 },
-    { "stop_id": "stop_C6", "path_id": "path_C", "x": 20.6, "y": 0.0, "spawn_probability": 0.35 },
-    { "stop_id": "stop_C7", "path_id": "path_C", "x": 20.6, "y": 20.0, "spawn_probability": 0.3 },
-    { "stop_id": "stop_C8", "path_id": "path_C", "x": 0.0, "y": 20.6, "spawn_probability": 0.4 }
+
+
+    { "stop_id": "stop_C1", "path_id": "path_C", "x": -20.0, "y": 20.0, "spawn_probability": 0.30 },
+    { "stop_id": "stop_C2", "path_id": "path_C", "x": -20.0, "y": 0.0, "spawn_probability": 0.35 },
+    { "stop_id": "stop_C3", "path_id": "path_C", "x": -20.0, "y": -20.0, "spawn_probability": 0.30 },
+    { "stop_id": "stop_C4", "path_id": "path_C", "x": 0.0, "y": -20.0, "spawn_probability": 0.35 },
+    { "stop_id": "stop_C5", "path_id": "path_C", "x": 20.0, "y": -20.0, "spawn_probability": 0.35 },
+    { "stop_id": "stop_C6", "path_id": "path_C", "x": 20.0, "y": 0.0, "spawn_probability": 0.35 },
+    { "stop_id": "stop_C7", "path_id": "path_C", "x": 20.0, "y": 20.0, "spawn_probability": 0.30 },
+    { "stop_id": "stop_C8", "path_id": "path_C", "x": 0.0, "y": 20.0, "spawn_probability": 0.40 }
+
   ]
 }
