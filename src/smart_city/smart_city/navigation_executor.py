@@ -37,7 +37,7 @@ class NavigationExecutor(Node):
         self.declare_parameter("waypoint_tolerance", 0.45)
         self.declare_parameter("obstacle_distance_threshold", 0.8)
         self.declare_parameter("linear_k", 0.8)
-        self.declare_parameter("angular_k", 2.0)
+        self.declare_parameter("angular_k", 0.8)
         self.declare_parameter("default_max_speed", 1.0)
         self.declare_parameter("traffic_light_distance", 2.0)
 
@@ -619,10 +619,14 @@ class NavigationExecutor(Node):
         max_speed = min(max_speed, edge_speed_limit)
 
         linear_speed = min(max_speed, self.linear_k * distance)
-        angular_speed = self.angular_k * angle_error
+        max_angular_speed = 1.0
+        angular_speed = max(
+            -max_angular_speed,
+            min(max_angular_speed, self.angular_k * angle_error)
+        )
 
         if abs(angle_error) > 0.7:
-            linear_speed = 0.0
+            linear_speed = 0.15
 
         cmd = Twist()
         cmd.linear.x = linear_speed
