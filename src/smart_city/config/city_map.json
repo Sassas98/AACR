@@ -81,11 +81,6 @@
     { "id": "e37", "from": "n5", "to": "n10", "speed_limit": 1.2 },
     { "id": "e38", "from": "n10", "to": "n15", "speed_limit": 1.2 },
     { "id": "e39", "from": "n15", "to": "n20", "speed_limit": 1.2 },
-    { "id": "e40", "from": "n20", "to": "n25", "speed_limit": 1.2 },
-
-    { "id": "e41", "from": "n7", "to": "n13", "speed_limit": 1.1 },
-    { "id": "e42", "from": "n13", "to": "n19", "speed_limit": 1.1 },
-    { "id": "e43", "from": "n9", "to": "n13", "speed_limit": 1.1 },
-    { "id": "e44", "from": "n13", "to": "n17", "speed_limit": 1.1 }
+    { "id": "e40", "from": "n20", "to": "n25", "speed_limit": 1.2 }
   ]
 }

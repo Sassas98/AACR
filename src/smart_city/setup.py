@@ -3,33 +3,24 @@ import os
 from glob import glob
 
 package_name = 'smart_city'
-package_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 def collect_files(folder):
-    result = []
-    abs_folder = os.path.join(package_dir, folder)
+    data_files = []
 
-    if not os.path.exists(abs_folder):
-        return result
+    if not os.path.exists(folder):
+        return data_files
 
-    for root, _, files in os.walk(abs_folder):
-        if not files:
-            continue
-
-        relative_root = os.path.relpath(root, package_dir)
-
-        result.append(
-            (
-                os.path.join('share', package_name, relative_root),
-                [
-                    os.path.join(relative_root, file)
-                    for file in files
-                ]
+    for root, _, files in os.walk(folder):
+        if files:
+            data_files.append(
+                (
+                    os.path.join('share', package_name, root),
+                    [os.path.join(root, file) for file in files]
+                )
             )
-        )
 
-    return result
+    return data_files
 
 
 setup(
@@ -53,7 +44,6 @@ setup(
             os.path.join('share', package_name, 'simulation'),
             glob('simulation/*.sdf')
         ),
-
         *collect_files('config'),
         *collect_files('model'),
     ],
@@ -75,7 +65,6 @@ setup(
             'traffic_light_manager = smart_city.traffic_light_manager:main',
             'taxi_coordinator = smart_city.taxi_coordinator:main',
             'taxi_request_manager = smart_city.taxi_request_manager:main',
-
             'bus_booking_generator = smart_city.bus_booking_generator:main',
             'taxi_request_generator = smart_city.taxi_request_generator:main',
             'private_car_simulator_node = smart_city.private_car_simulator_node:main',
