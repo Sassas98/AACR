@@ -3,6 +3,8 @@ import math
 import os
 import heapq
 from enum import Enum
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 import rclpy
 from rclpy.node import Node
@@ -25,17 +27,24 @@ class NavigationExecutor(Node):
     def __init__(self):
         super().__init__("navigation_executor")
 
+        # ------------------------------------------------------------
+        # PARAMETRI
+        # ------------------------------------------------------------
         self.declare_parameter("vehicle_id", "vehicle")
         self.declare_parameter("map_config_file", "config/city_map.json")
 
-        self.declare_parameter("default_max_speed", 2.8)
-        self.declare_parameter("linear_k", 2.0)
-        self.declare_parameter("angular_k", 1.4)
-        self.declare_parameter("max_angular_speed", 0.75)
+        self.declare_parameter("default_max_speed", 1.2)
+        self.declare_parameter("linear_k", 0.9)
+        self.declare_parameter("angular_k", 0.7)
+        self.declare_parameter("max_angular_speed", 0.25)
 
-        self.declare_parameter("waypoint_tolerance", 0.75)
-        self.declare_parameter("target_tolerance", 0.85)
+        self.declare_parameter("waypoint_tolerance", 0.30)
+        self.declare_parameter("target_tolerance", 0.45)
         self.declare_parameter("lane_offset_ratio", 0.5)
+
+        self.declare_parameter("intersection_clearance", 2.2)
+        self.declare_parameter("diagnostic_log_period_sec", 1.0)
+        self.declare_parameter("path_log_enabled", True)
 
         self.vehicle_id = self.get_parameter("vehicle_id").value
         self.map_config_file = self.get_parameter("map_config_file").value
@@ -49,11 +58,29 @@ class NavigationExecutor(Node):
         self.target_tolerance = float(self.get_parameter("target_tolerance").value)
         self.lane_offset_ratio = float(self.get_parameter("lane_offset_ratio").value)
 
+        self.intersection_clearance = float(self.get_parameter("intersection_clearance").value)
+        self.diagnostic_log_period_sec = float(self.get_parameter("diagnostic_log_period_sec").value)
+        self.path_log_enabled = bool(self.get_parameter("path_log_enabled").value)
+
+        self.declare_parameter("initial_x", 0.0)
+        self.declare_parameter("initial_y", 0.0)
+        self.declare_parameter("initial_yaw", 0.0)
+
+        self.initial_x = float(self.get_parameter("initial_x").value)
+        self.initial_y = float(self.get_parameter("initial_y").value)
+        self.initial_yaw = float(self.get_parameter("initial_yaw").value)
+
+        # ------------------------------------------------------------
+        # STATO
+        # ------------------------------------------------------------
         self.state = ExecutorState.IDLE
 
+        self.has_odom = False
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_yaw = 0.0
+
+        self.last_scan_stamp = None
 
         self.nodes = {}
         self.edges = []
@@ -64,36 +91,60 @@ class NavigationExecutor(Node):
 
         self.current_path = []
         self.current_waypoint_index = 0
+        self.current_mission_id = ""
+
+        self.last_diag_time = self.get_clock().now()
 
         self.load_map()
 
-        self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        # ------------------------------------------------------------
+        # TOPIC RELATIVI
+        # IMPORTANTISSIMO:
+        # se il nodo gira nel namespace /taxi_1,
+        # "cmd_vel" diventa /taxi_1/cmd_vel.
+        # ------------------------------------------------------------
+        self.callback_group = ReentrantCallbackGroup()
+
+        self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel", 10)
 
         self.odom_sub = self.create_subscription(
             Odometry,
-            "/odom",
+            "odom",
             self.on_odom,
-            10
+            10,
+            callback_group=self.callback_group
         )
 
         self.scan_sub = self.create_subscription(
             LaserScan,
-            "/scan",
+            "scan",
             self.on_scan,
-            10
+            10,
+            callback_group=self.callback_group
         )
 
+        # Action relativa al namespace del veicolo:
+        # /taxi_1/navigation_executor/navigate_to_pose
         self.action_server = ActionServer(
             self,
             NavigateToPose,
-            "/navigation_executor/navigate_to_pose",
+            "navigation_executor/navigate_to_pose",
             execute_callback=self.execute_callback,
             goal_callback=self.goal_callback,
-            cancel_callback=self.cancel_callback
+            cancel_callback=self.cancel_callback,
+            callback_group=self.callback_group
         )
 
         self.get_logger().info(
-            f"navigation_executor avviato per {self.vehicle_id}"
+            f"[INIT] NavigationExecutor avviato | "
+            f"vehicle_id={self.vehicle_id} | "
+            f"namespace={self.get_namespace()} | "
+            f"map={self.map_config_file}"
+        )
+
+        self.get_logger().info(
+            "[INIT] Topic attesi nel namespace corrente: "
+            "cmd_vel, odom, scan"
         )
 
     # ------------------------------------------------------------------
@@ -105,6 +156,8 @@ class NavigationExecutor(Node):
 
         if not os.path.isabs(path):
             path = os.path.join(os.getcwd(), path)
+
+        self.get_logger().info(f"[MAP] Caricamento mappa da: {path}")
 
         if not os.path.exists(path):
             raise FileNotFoundError(f"File mappa non trovato: {path}")
@@ -127,6 +180,11 @@ class NavigationExecutor(Node):
             from_id = edge["from"]
             to_id = edge["to"]
 
+            if from_id not in self.nodes or to_id not in self.nodes:
+                raise RuntimeError(
+                    f"Edge {edge_id} usa nodi non esistenti: {from_id}->{to_id}"
+                )
+
             a = self.nodes[from_id]
             b = self.nodes[to_id]
 
@@ -146,30 +204,47 @@ class NavigationExecutor(Node):
             self.adj.setdefault(from_id, [])
             self.adj.setdefault(to_id, [])
 
+            # DOPPIO SENSO
             self.adj[from_id].append((to_id, edge_id, length))
             self.adj[to_id].append((from_id, edge_id, length))
 
         self.get_logger().info(
-            f"mappa caricata: {len(self.nodes)} nodi, {len(self.edges)} archi"
+            f"[MAP] Mappa caricata | "
+            f"nodes={len(self.nodes)} | "
+            f"edges={len(self.edges)} | "
+            f"lane_width={self.lane_width:.2f} | "
+            f"default_speed_limit={self.default_map_speed_limit:.2f}"
         )
 
     # ------------------------------------------------------------------
-    # CALLBACK
+    # CALLBACK SENSORI
     # ------------------------------------------------------------------
 
     def on_odom(self, msg):
-        self.current_x = msg.pose.pose.position.x
-        self.current_y = msg.pose.pose.position.y
+        local_x = msg.pose.pose.position.x
+        local_y = msg.pose.pose.position.y
 
         q = msg.pose.pose.orientation
-
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        local_yaw = math.atan2(siny_cosp, cosy_cosp)
 
-        self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
+        cos0 = math.cos(self.initial_yaw)
+        sin0 = math.sin(self.initial_yaw)
+
+        world_dx = cos0 * local_x - sin0 * local_y
+        world_dy = sin0 * local_x + cos0 * local_y
+
+        self.current_x = self.initial_x + world_dx
+        self.current_y = self.initial_y + world_dy
+        self.current_yaw = self.normalize_angle(self.initial_yaw + local_yaw)
+
+        self.has_odom = True
 
     def on_scan(self, msg):
-        pass
+        self.last_scan_stamp = msg.header.stamp
+        # Per ora non blocchiamo la navigazione con ostacoli.
+        # Qui in futuro potrai aggiungere logica anticollisione.
 
     # ------------------------------------------------------------------
     # ACTION
@@ -177,21 +252,48 @@ class NavigationExecutor(Node):
 
     def goal_callback(self, goal_request):
         self.get_logger().info(
-            f"{self.vehicle_id}: ricevuto goal "
-            f"mission={goal_request.mission_id}, "
-            f"target=({goal_request.target_x:.2f}, {goal_request.target_y:.2f})"
+            f"[GOAL] Ricevuto goal | "
+            f"vehicle={self.vehicle_id} | "
+            f"mission={goal_request.mission_id} | "
+            f"target=({goal_request.target_x:.2f}, {goal_request.target_y:.2f}) | "
+            f"max_speed={goal_request.max_speed:.2f}"
         )
+
+        if not self.has_odom:
+            self.get_logger().warn(
+                "[GOAL] Goal accettato, ma non ho ancora ricevuto odom. "
+                "Se la navigazione fallisce subito, controllare topic odom."
+            )
 
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle):
-        self.get_logger().info(f"{self.vehicle_id}: cancellazione richiesta")
+        self.get_logger().warn(f"[CANCEL] Cancellazione richiesta | vehicle={self.vehicle_id}")
         return CancelResponse.ACCEPT
 
     async def execute_callback(self, goal_handle):
         goal = goal_handle.request
+        self.current_mission_id = goal.mission_id
+
+        if not self.has_odom:
+            self.stop_vehicle()
+            goal_handle.abort()
+
+            result = NavigateToPose.Result()
+            result.success = False
+            result.message = "Odom non ancora disponibile"
+            self.get_logger().error("[EXEC] Abort: odom non disponibile")
+            return result
 
         self.state = ExecutorState.NAVIGATING
+
+        self.get_logger().info(
+            f"[EXEC] Avvio navigazione | "
+            f"mission={goal.mission_id} | "
+            f"start=({self.current_x:.2f},{self.current_y:.2f}) | "
+            f"yaw={self.current_yaw:.2f} | "
+            f"target=({goal.target_x:.2f},{goal.target_y:.2f})"
+        )
 
         try:
             self.current_path = self.build_navigation_path(
@@ -203,16 +305,10 @@ class NavigationExecutor(Node):
 
             self.current_waypoint_index = 0
 
-            self.get_logger().info(
-                f"{self.vehicle_id}: path calcolato con {len(self.current_path)} waypoint"
-            )
+            if not self.current_path:
+                raise RuntimeError("path vuoto")
 
-            for i, wp in enumerate(self.current_path):
-                self.get_logger().info(
-                    f"{self.vehicle_id}: wp[{i}] "
-                    f"({wp['x']:.2f}, {wp['y']:.2f}) "
-                    f"edge={wp.get('edge_id')} node={wp.get('node_id')}"
-                )
+            self.log_path(self.current_path)
 
         except Exception as ex:
             self.stop_vehicle()
@@ -222,6 +318,8 @@ class NavigationExecutor(Node):
             result = NavigateToPose.Result()
             result.success = False
             result.message = f"Errore calcolo path: {ex}"
+
+            self.get_logger().error(f"[EXEC] Errore calcolo path: {ex}")
             return result
 
         rate = self.create_rate(20)
@@ -235,6 +333,10 @@ class NavigationExecutor(Node):
                 result = NavigateToPose.Result()
                 result.success = False
                 result.message = "Navigazione cancellata"
+
+                self.get_logger().warn(
+                    f"[EXEC] Navigazione cancellata | mission={goal.mission_id}"
+                )
                 return result
 
             if self.current_waypoint_index >= len(self.current_path):
@@ -245,6 +347,11 @@ class NavigationExecutor(Node):
                 result = NavigateToPose.Result()
                 result.success = True
                 result.message = "Target raggiunto"
+
+                self.get_logger().info(
+                    f"[EXEC] Target raggiunto | mission={goal.mission_id} | "
+                    f"final_pos=({self.current_x:.2f},{self.current_y:.2f})"
+                )
                 return result
 
             current_wp = self.current_path[self.current_waypoint_index]
@@ -257,6 +364,13 @@ class NavigationExecutor(Node):
             tolerance = self.target_tolerance if is_last else self.waypoint_tolerance
 
             if distance <= tolerance:
+                self.get_logger().info(
+                    f"[WP] Waypoint raggiunto | "
+                    f"idx={self.current_waypoint_index + 1}/{len(self.current_path)} | "
+                    f"dist={distance:.2f} | tol={tolerance:.2f} | "
+                    f"wp=({current_wp['x']:.2f},{current_wp['y']:.2f})"
+                )
+
                 self.current_waypoint_index += 1
                 continue
 
@@ -267,10 +381,14 @@ class NavigationExecutor(Node):
             feedback.current_y = float(self.current_y)
             feedback.distance_remaining = float(self.compute_remaining_distance())
             feedback.status = (
-                f"wp {self.current_waypoint_index + 1}/{len(self.current_path)}"
+                f"mission={goal.mission_id} "
+                f"wp={self.current_waypoint_index + 1}/{len(self.current_path)} "
+                f"state={self.state.value}"
             )
 
             goal_handle.publish_feedback(feedback)
+
+            self.maybe_log_diagnostics(current_wp, distance)
 
             rate.sleep()
 
@@ -281,10 +399,12 @@ class NavigationExecutor(Node):
         result = NavigateToPose.Result()
         result.success = False
         result.message = "Navigazione interrotta"
+
+        self.get_logger().error("[EXEC] Loop ROS interrotto")
         return result
 
     # ------------------------------------------------------------------
-    # PATH PLANNING SU GRAFO
+    # PATH PLANNING
     # ------------------------------------------------------------------
 
     def build_navigation_path(self, start_x, start_y, target_x, target_y):
@@ -293,6 +413,22 @@ class NavigationExecutor(Node):
 
         start_edge = start_projection["edge"]
         target_edge = target_projection["edge"]
+
+        self.get_logger().info(
+            f"[PATH] Start projection | "
+            f"pos=({start_x:.2f},{start_y:.2f}) | "
+            f"edge={start_edge['id']} {start_edge['from']}->{start_edge['to']} | "
+            f"proj=({start_projection['x']:.2f},{start_projection['y']:.2f}) | "
+            f"distance_from_road={start_projection['distance']:.2f}"
+        )
+
+        self.get_logger().info(
+            f"[PATH] Target projection | "
+            f"target=({target_x:.2f},{target_y:.2f}) | "
+            f"edge={target_edge['id']} {target_edge['from']}->{target_edge['to']} | "
+            f"proj=({target_projection['x']:.2f},{target_projection['y']:.2f}) | "
+            f"distance_from_road={target_projection['distance']:.2f}"
+        )
 
         start_candidates = [start_edge["from"], start_edge["to"]]
         target_candidates = [target_edge["from"], target_edge["to"]]
@@ -304,18 +440,32 @@ class NavigationExecutor(Node):
             for t in target_candidates:
                 node_path, cost = self.shortest_path(s, t)
 
-                cost += self.distance_to_node_on_edge(start_projection, s)
-                cost += self.distance_to_node_on_edge(target_projection, t)
+                if node_path is None:
+                    continue
 
-                if node_path and cost < best_cost:
-                    best_cost = cost
+                total_cost = cost
+                total_cost += self.distance_to_node_on_edge(start_projection, s)
+                total_cost += self.distance_to_node_on_edge(target_projection, t)
+
+                self.get_logger().info(
+                    f"[PATH] Candidate | "
+                    f"{s}->{t} | nodes={node_path} | cost={total_cost:.2f}"
+                )
+
+                if total_cost < best_cost:
+                    best_cost = total_cost
                     best_node_path = node_path
 
         if not best_node_path:
             raise RuntimeError("nessun path trovato sul grafo")
 
+        self.get_logger().info(
+            f"[PATH] Best node path | cost={best_cost:.2f} | nodes={best_node_path}"
+        )
+
         waypoints = []
 
+        # Primo punto: proiezione della posizione sulla corsia.
         start_lane = self.project_point_to_lane(
             start_projection,
             best_node_path[0]
@@ -326,44 +476,50 @@ class NavigationExecutor(Node):
             "y": start_lane["y"],
             "edge_id": start_edge["id"],
             "node_id": None,
+            "kind": "start_projection",
             "speed_limit": start_edge["speed_limit"]
         })
 
+        # Segmenti tra nodi.
         for i in range(len(best_node_path) - 1):
             current_node_id = best_node_path[i]
             next_node_id = best_node_path[i + 1]
 
-            current_node = self.nodes[current_node_id]
             edge = self.get_edge_between(current_node_id, next_node_id)
 
-            lane_point = self.node_to_lane_point(
+            # Punto appena uscito dal nodo corrente sulla corsia dell'edge.
+            exit_from_current = self.node_to_lane_point(
                 current_node_id,
                 next_node_id,
-                approach=False
+                mode="exit"
             )
 
             waypoints.append({
-                "x": lane_point["x"],
-                "y": lane_point["y"],
+                "x": exit_from_current["x"],
+                "y": exit_from_current["y"],
                 "edge_id": edge["id"],
                 "node_id": current_node_id,
+                "kind": "exit_intersection",
                 "speed_limit": edge["speed_limit"]
             })
 
-            exit_point = self.node_to_lane_point(
+            # Punto prima di arrivare al nodo successivo.
+            approach_next = self.node_to_lane_point(
                 next_node_id,
                 current_node_id,
-                approach=True
+                mode="approach"
             )
 
             waypoints.append({
-                "x": exit_point["x"],
-                "y": exit_point["y"],
+                "x": approach_next["x"],
+                "y": approach_next["y"],
                 "edge_id": edge["id"],
                 "node_id": next_node_id,
+                "kind": "approach_intersection",
                 "speed_limit": edge["speed_limit"]
             })
 
+        # Ultimo punto: target proiettato sulla corsia.
         target_lane = self.project_point_to_lane(
             target_projection,
             best_node_path[-1]
@@ -374,10 +530,13 @@ class NavigationExecutor(Node):
             "y": target_lane["y"],
             "edge_id": target_edge["id"],
             "node_id": None,
+            "kind": "target_projection",
             "speed_limit": target_edge["speed_limit"]
         })
 
-        return self.simplify_waypoints(waypoints)
+        waypoints = self.simplify_waypoints(waypoints)
+
+        return waypoints
 
     def shortest_path(self, start_node_id, target_node_id):
         queue = [(0.0, start_node_id, [])]
@@ -434,6 +593,9 @@ class NavigationExecutor(Node):
                     "distance": d
                 }
 
+        if best is None:
+            raise RuntimeError("impossibile proiettare su una strada")
+
         return best
 
     def project_point_on_segment(self, px, py, ax, ay, bx, by):
@@ -478,7 +640,7 @@ class NavigationExecutor(Node):
 
         return {"x": lane_x, "y": lane_y}
 
-    def node_to_lane_point(self, node_id, other_node_id, approach):
+    def node_to_lane_point(self, node_id, other_node_id, mode):
         node = self.nodes[node_id]
         other = self.nodes[other_node_id]
 
@@ -493,22 +655,39 @@ class NavigationExecutor(Node):
         ux = dx / length
         uy = dy / length
 
-        intersection_clearance = 2.2
+        c = self.intersection_clearance
 
-        if approach:
-            base_x = node["x"] + ux * intersection_clearance
-            base_y = node["y"] + uy * intersection_clearance
+        if mode == "exit":
+            # Appena dopo essere usciti dall'incrocio verso other_node.
+            base_x = node["x"] + ux * c
+            base_y = node["y"] + uy * c
+
+            lane_from_x = node["x"]
+            lane_from_y = node["y"]
+            lane_to_x = other["x"]
+            lane_to_y = other["y"]
+
+        elif mode == "approach":
+            # Prima di entrare nell'incrocio arrivando da other_node verso node.
+            base_x = node["x"] + ux * c
+            base_y = node["y"] + uy * c
+
+            # Qui la direzione reale di marcia è other -> node.
+            lane_from_x = other["x"]
+            lane_from_y = other["y"]
+            lane_to_x = node["x"]
+            lane_to_y = node["y"]
+
         else:
-            base_x = node["x"] + ux * intersection_clearance
-            base_y = node["y"] + uy * intersection_clearance
+            raise RuntimeError(f"mode non valido: {mode}")
 
         lane_x, lane_y = self.apply_right_lane_offset(
             base_x,
             base_y,
-            node["x"],
-            node["y"],
-            other["x"],
-            other["y"]
+            lane_from_x,
+            lane_from_y,
+            lane_to_x,
+            lane_to_y
         )
 
         return {"x": lane_x, "y": lane_y}
@@ -560,8 +739,13 @@ class NavigationExecutor(Node):
             last = result[-1]
             d = self.distance_xy(last["x"], last["y"], wp["x"], wp["y"])
 
-            if d >= 0.4:
+            if d >= 0.35:
                 result.append(wp)
+            else:
+                self.get_logger().debug(
+                    f"[PATH] Waypoint rimosso perché troppo vicino | "
+                    f"d={d:.2f} | wp=({wp['x']:.2f},{wp['y']:.2f})"
+                )
 
         return result
 
@@ -582,11 +766,11 @@ class NavigationExecutor(Node):
             waypoint.get("speed_limit", self.default_map_speed_limit)
         )
 
-        max_speed = requested_max_speed
+        max_speed = float(requested_max_speed)
         if max_speed <= 0.0:
             max_speed = self.default_max_speed
 
-        max_speed = min(max_speed, edge_speed_limit * 2.0)
+        max_speed = min(max_speed, edge_speed_limit)
 
         angular_speed = self.angular_k * angle_error
         angular_speed = max(
@@ -596,27 +780,19 @@ class NavigationExecutor(Node):
 
         abs_error = abs(angle_error)
 
-        if abs_error > 2.6:
-            linear_speed = 0.15
-        elif abs_error > 1.2:
-            linear_speed = 0.45
-        elif abs_error > 0.55:
-            linear_speed = 0.75
+        if abs_error > 0.60:
+            linear_speed = 0.0
+            motion_mode = "ROTATE_IN_PLACE"
         else:
             linear_speed = min(max_speed, self.linear_k * distance)
+            motion_mode = "FORWARD"
 
-        if distance > 1.5 and linear_speed < 0.65:
-            linear_speed = 0.65
+        # Rallenta vicino al waypoint.
+        if distance < 1.5:
+            linear_speed = min(linear_speed, 0.35)
 
-        self.get_logger().info(
-            f"{self.vehicle_id}: "
-            f"wp={self.current_waypoint_index + 1}/{len(self.current_path)} "
-            f"target=({waypoint['x']:.2f},{waypoint['y']:.2f}) "
-            f"pos=({self.current_x:.2f},{self.current_y:.2f}) "
-            f"yaw={self.current_yaw:.2f} "
-            f"angle_error={angle_error:.2f} "
-            f"linear={linear_speed:.2f} angular={angular_speed:.2f}"
-        )
+        if distance < 0.8:
+            linear_speed = min(linear_speed, 0.20)
 
         cmd = Twist()
         cmd.linear.x = float(linear_speed)
@@ -624,8 +800,52 @@ class NavigationExecutor(Node):
 
         self.cmd_vel_pub.publish(cmd)
 
+        waypoint["_last_control"] = {
+            "target_angle": target_angle,
+            "angle_error": angle_error,
+            "distance": distance,
+            "linear_speed": linear_speed,
+            "angular_speed": angular_speed,
+            "motion_mode": motion_mode,
+            "max_speed": max_speed
+        }
+
     def stop_vehicle(self):
         self.cmd_vel_pub.publish(Twist())
+        self.get_logger().info("[CMD] Stop vehicle pubblicato")
+
+    # ------------------------------------------------------------------
+    # LOG
+    # ------------------------------------------------------------------
+
+    def log_path(self, path):
+        self.get_logger().info(
+            f"[PATH] Path calcolato | waypoints={len(path)}"
+        )
+
+        if not self.path_log_enabled:
+            return
+
+        for i, wp in enumerate(path):
+            self.get_logger().info(
+                f"[PATH] wp[{i}] | "
+                f"kind={wp.get('kind')} | "
+                f"pos=({wp['x']:.2f},{wp['y']:.2f}) | "
+                f"edge={wp.get('edge_id')} | "
+                f"node={wp.get('node_id')} | "
+                f"speed_limit={wp.get('speed_limit')}"
+            )
+
+    def maybe_log_diagnostics(self, waypoint, distance):
+        now = self.get_clock().now()
+        elapsed = (now - self.last_diag_time).nanoseconds / 1e9
+
+        if elapsed < self.diagnostic_log_period_sec:
+            return
+
+        self.last_diag_time = now
+
+        ctrl = waypoint.get("_last_control", {})
 
     # ------------------------------------------------------------------
     # UTILITY
@@ -677,12 +897,16 @@ def main(args=None):
 
     node = NavigationExecutor()
 
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
 
     node.stop_vehicle()
+    executor.shutdown()
     node.destroy_node()
     rclpy.shutdown()
 
