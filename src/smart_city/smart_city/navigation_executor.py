@@ -13,6 +13,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 
 from smart_city_interfaces.action import NavigateToPose
 
@@ -20,6 +21,8 @@ from smart_city_interfaces.action import NavigateToPose
 class ExecutorState(Enum):
     IDLE = "IDLE"
     NAVIGATING = "NAVIGATING"
+    WAITING_TRAFFIC_LIGHT = "WAITING_TRAFFIC_LIGHT"
+    OBSTACLE_STOP = "OBSTACLE_STOP"
 
 
 class NavigationExecutor(Node):
@@ -46,6 +49,14 @@ class NavigationExecutor(Node):
         self.declare_parameter("diagnostic_log_period_sec", 1.0)
         self.declare_parameter("path_log_enabled", True)
 
+        # Semafori
+        self.declare_parameter("traffic_light_stop_distance", 1.5)
+
+        # LiDAR anticollisione
+        self.declare_parameter("obstacle_stop_distance", 0.8)
+        self.declare_parameter("obstacle_slow_distance", 1.8)
+        self.declare_parameter("obstacle_fov_deg", 60.0)
+
         self.vehicle_id = self.get_parameter("vehicle_id").value
         self.map_config_file = self.get_parameter("map_config_file").value
 
@@ -61,6 +72,11 @@ class NavigationExecutor(Node):
         self.intersection_clearance = float(self.get_parameter("intersection_clearance").value)
         self.diagnostic_log_period_sec = float(self.get_parameter("diagnostic_log_period_sec").value)
         self.path_log_enabled = bool(self.get_parameter("path_log_enabled").value)
+
+        self.traffic_light_stop_distance = float(self.get_parameter("traffic_light_stop_distance").value)
+        self.obstacle_stop_distance = float(self.get_parameter("obstacle_stop_distance").value)
+        self.obstacle_slow_distance = float(self.get_parameter("obstacle_slow_distance").value)
+        self.obstacle_fov_deg = float(self.get_parameter("obstacle_fov_deg").value)
 
         self.declare_parameter("initial_x", 0.0)
         self.declare_parameter("initial_y", 0.0)
@@ -80,7 +96,12 @@ class NavigationExecutor(Node):
         self.current_y = 0.0
         self.current_yaw = 0.0
 
+        # LiDAR
+        self.obstacle_min_distance = float("inf")   # distanza minima ostacolo nel FOV frontale
         self.last_scan_stamp = None
+
+        # Semafori: dizionario node_id -> status dict
+        self.traffic_light_statuses = {}
 
         self.nodes = {}
         self.edges = []
@@ -98,10 +119,7 @@ class NavigationExecutor(Node):
         self.load_map()
 
         # ------------------------------------------------------------
-        # TOPIC RELATIVI
-        # IMPORTANTISSIMO:
-        # se il nodo gira nel namespace /taxi_1,
-        # "cmd_vel" diventa /taxi_1/cmd_vel.
+        # TOPIC
         # ------------------------------------------------------------
         self.callback_group = ReentrantCallbackGroup()
 
@@ -123,8 +141,20 @@ class NavigationExecutor(Node):
             callback_group=self.callback_group
         )
 
-        # Action relativa al namespace del veicolo:
-        # /taxi_1/navigation_executor/navigate_to_pose
+        self.traffic_light_sub = self.create_subscription(
+            String,
+            "/traffic_light/status",
+            self.on_traffic_light_status,
+            10,
+            callback_group=self.callback_group
+        )
+
+        self.priority_pub = self.create_publisher(
+            String,
+            "/traffic_light/priority_request",
+            10
+        )
+
         self.action_server = ActionServer(
             self,
             NavigateToPose,
@@ -140,11 +170,6 @@ class NavigationExecutor(Node):
             f"vehicle_id={self.vehicle_id} | "
             f"namespace={self.get_namespace()} | "
             f"map={self.map_config_file}"
-        )
-
-        self.get_logger().info(
-            "[INIT] Topic attesi nel namespace corrente: "
-            "cmd_vel, odom, scan"
         )
 
     # ------------------------------------------------------------------
@@ -204,14 +229,12 @@ class NavigationExecutor(Node):
             self.adj.setdefault(from_id, [])
             self.adj.setdefault(to_id, [])
 
-            # DOPPIO SENSO
             self.adj[from_id].append((to_id, edge_id, length))
             self.adj[to_id].append((from_id, edge_id, length))
 
         self.get_logger().info(
             f"[MAP] Mappa caricata | "
-            f"nodes={len(self.nodes)} | "
-            f"edges={len(self.edges)} | "
+            f"nodes={len(self.nodes)} | edges={len(self.edges)} | "
             f"lane_width={self.lane_width:.2f} | "
             f"default_speed_limit={self.default_map_speed_limit:.2f}"
         )
@@ -229,22 +252,131 @@ class NavigationExecutor(Node):
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         local_yaw = math.atan2(siny_cosp, cosy_cosp)
 
+        # Ruota il delta locale nel frame mondo usando lo yaw iniziale
         cos0 = math.cos(self.initial_yaw)
         sin0 = math.sin(self.initial_yaw)
 
-        world_dx = cos0 * local_x - sin0 * local_y
-        world_dy = sin0 * local_x + cos0 * local_y
-
-        self.current_x = self.initial_x + world_dx
-        self.current_y = self.initial_y + world_dy
+        self.current_x = self.initial_x + cos0 * local_x - sin0 * local_y
+        self.current_y = self.initial_y + sin0 * local_x + cos0 * local_y
         self.current_yaw = self.normalize_angle(self.initial_yaw + local_yaw)
 
         self.has_odom = True
 
     def on_scan(self, msg):
+        """
+        Analizza il LiDAR tenendo solo i raggi nel cono frontale
+        (±obstacle_fov_deg/2 rispetto al fronte del veicolo).
+        Salva la distanza minima trovata in self.obstacle_min_distance.
+        """
         self.last_scan_stamp = msg.header.stamp
-        # Per ora non blocchiamo la navigazione con ostacoli.
-        # Qui in futuro potrai aggiungere logica anticollisione.
+
+        fov_rad = math.radians(self.obstacle_fov_deg / 2.0)
+
+        min_dist = float("inf")
+
+        angle = msg.angle_min
+
+        for r in msg.ranges:
+            if msg.range_min <= r <= msg.range_max:
+                # Normalizza l'angolo del raggio nel frame del veicolo.
+                # Il LiDAR pubblica angoli relativi al sensore: 0 = fronte.
+                normalized = self.normalize_angle(angle)
+
+                if abs(normalized) <= fov_rad:
+                    if r < min_dist:
+                        min_dist = r
+
+            angle += msg.angle_increment
+
+        self.obstacle_min_distance = min_dist
+
+    def on_traffic_light_status(self, msg):
+        try:
+            status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+
+        node_id = status.get("node_id")
+
+        if node_id:
+            self.traffic_light_statuses[node_id] = status
+
+    # ------------------------------------------------------------------
+    # SEMAFORI
+    # ------------------------------------------------------------------
+
+    def publish_priority_request(self, from_node_id, to_node_id, intersection_node_id, mission_id):
+        payload = {
+            "vehicle_id": self.vehicle_id,
+            "mission_id": mission_id,
+            "node_id": intersection_node_id,
+            "from_node_id": from_node_id,
+            "to_node_id": to_node_id,
+            "priority": 1
+        }
+
+        msg = String()
+        msg.data = json.dumps(payload)
+        self.priority_pub.publish(msg)
+
+        self.get_logger().info(
+            f"[TL] Priority request inviata | "
+            f"intersection={intersection_node_id} | "
+            f"{from_node_id}->{intersection_node_id}->{to_node_id}"
+        )
+
+    def is_movement_allowed(self, from_node_id, to_node_id, intersection_node_id):
+        """
+        Controlla se il TrafficLightManager dell'incrocio consente
+        il movimento from_node_id -> intersection_node_id -> to_node_id.
+        Se non abbiamo ancora ricevuto lo status del semaforo, lasciamo passare
+        (fail-open: meglio rischiare una piccola sovrapposizione che bloccarsi).
+        """
+        status = self.traffic_light_statuses.get(intersection_node_id)
+
+        if status is None:
+            return True
+
+        allowed = status.get("allowed_movements", [])
+
+        for m in allowed:
+            if m["from"] == from_node_id and m["to"] == to_node_id:
+                return True
+
+        return False
+
+    def distance_to_node(self, node_id):
+        node = self.nodes.get(node_id)
+
+        if node is None:
+            return float("inf")
+
+        return self.distance_xy(self.current_x, self.current_y, node["x"], node["y"])
+
+    # ------------------------------------------------------------------
+    # OSTACOLI
+    # ------------------------------------------------------------------
+
+    def get_obstacle_speed_factor(self):
+        """
+        Restituisce un fattore [0.0, 1.0] da applicare alla velocità lineare.
+        0.0  → stop completo (ostacolo entro stop_distance)
+        0.0..1.0 → rallentamento lineare tra slow_distance e stop_distance
+        1.0  → nessun ostacolo rilevante
+        """
+        d = self.obstacle_min_distance
+
+        if d <= self.obstacle_stop_distance:
+            return 0.0
+
+        if d <= self.obstacle_slow_distance:
+            # Interpolazione lineare: più vicino = più lento.
+            ratio = (d - self.obstacle_stop_distance) / (
+                self.obstacle_slow_distance - self.obstacle_stop_distance
+            )
+            return max(0.0, min(1.0, ratio))
+
+        return 1.0
 
     # ------------------------------------------------------------------
     # ACTION
@@ -261,8 +393,7 @@ class NavigationExecutor(Node):
 
         if not self.has_odom:
             self.get_logger().warn(
-                "[GOAL] Goal accettato, ma non ho ancora ricevuto odom. "
-                "Se la navigazione fallisce subito, controllare topic odom."
+                "[GOAL] Goal accettato, ma odom non ancora disponibile."
             )
 
         return GoalResponse.ACCEPT
@@ -278,7 +409,6 @@ class NavigationExecutor(Node):
         if not self.has_odom:
             self.stop_vehicle()
             goal_handle.abort()
-
             result = NavigateToPose.Result()
             result.success = False
             result.message = "Odom non ancora disponibile"
@@ -288,21 +418,17 @@ class NavigationExecutor(Node):
         self.state = ExecutorState.NAVIGATING
 
         self.get_logger().info(
-            f"[EXEC] Avvio navigazione | "
-            f"mission={goal.mission_id} | "
+            f"[EXEC] Avvio navigazione | mission={goal.mission_id} | "
             f"start=({self.current_x:.2f},{self.current_y:.2f}) | "
             f"yaw={self.current_yaw:.2f} | "
             f"target=({goal.target_x:.2f},{goal.target_y:.2f})"
         )
 
         try:
-            self.current_path = self.build_navigation_path(
-                self.current_x,
-                self.current_y,
-                goal.target_x,
-                goal.target_y
+            self.current_path, self.node_path = self.build_navigation_path(
+                self.current_x, self.current_y,
+                goal.target_x, goal.target_y
             )
-
             self.current_waypoint_index = 0
 
             if not self.current_path:
@@ -314,40 +440,35 @@ class NavigationExecutor(Node):
             self.stop_vehicle()
             self.state = ExecutorState.IDLE
             goal_handle.abort()
-
             result = NavigateToPose.Result()
             result.success = False
             result.message = f"Errore calcolo path: {ex}"
-
             self.get_logger().error(f"[EXEC] Errore calcolo path: {ex}")
             return result
 
         rate = self.create_rate(20)
 
         while rclpy.ok():
+
+            # ── Cancellazione ──────────────────────────────────────────
             if goal_handle.is_cancel_requested:
                 self.stop_vehicle()
                 self.state = ExecutorState.IDLE
                 goal_handle.canceled()
-
                 result = NavigateToPose.Result()
                 result.success = False
                 result.message = "Navigazione cancellata"
-
-                self.get_logger().warn(
-                    f"[EXEC] Navigazione cancellata | mission={goal.mission_id}"
-                )
+                self.get_logger().warn(f"[EXEC] Cancellata | mission={goal.mission_id}")
                 return result
 
+            # ── Target raggiunto ───────────────────────────────────────
             if self.current_waypoint_index >= len(self.current_path):
                 self.stop_vehicle()
                 self.state = ExecutorState.IDLE
                 goal_handle.succeed()
-
                 result = NavigateToPose.Result()
                 result.success = True
                 result.message = "Target raggiunto"
-
                 self.get_logger().info(
                     f"[EXEC] Target raggiunto | mission={goal.mission_id} | "
                     f"final_pos=({self.current_x:.2f},{self.current_y:.2f})"
@@ -363,6 +484,7 @@ class NavigationExecutor(Node):
             is_last = self.current_waypoint_index == len(self.current_path) - 1
             tolerance = self.target_tolerance if is_last else self.waypoint_tolerance
 
+            # ── Waypoint raggiunto ─────────────────────────────────────
             if distance <= tolerance:
                 self.get_logger().info(
                     f"[WP] Waypoint raggiunto | "
@@ -370,22 +492,87 @@ class NavigationExecutor(Node):
                     f"dist={distance:.2f} | tol={tolerance:.2f} | "
                     f"wp=({current_wp['x']:.2f},{current_wp['y']:.2f})"
                 )
-
                 self.current_waypoint_index += 1
                 continue
 
-            self.move_towards_waypoint(current_wp, goal.max_speed)
+            # ── Controllo semaforo ─────────────────────────────────────
+            #
+            # Se il waypoint corrente è di tipo approach_intersection,
+            # significa che stiamo avvicinandoci a un nodo-incrocio.
+            # Usiamo node_path per risalire a from_node e to_node.
+            #
+            if current_wp.get("kind") == "approach_intersection":
+                intersection_node_id = current_wp.get("node_id")
+                from_node_id, to_node_id = self.get_movement_for_intersection(
+                    intersection_node_id
+                )
 
-            feedback = NavigateToPose.Feedback()
-            feedback.current_x = float(self.current_x)
-            feedback.current_y = float(self.current_y)
-            feedback.distance_remaining = float(self.compute_remaining_distance())
-            feedback.status = (
-                f"mission={goal.mission_id} "
-                f"wp={self.current_waypoint_index + 1}/{len(self.current_path)} "
-                f"state={self.state.value}"
-            )
+                if intersection_node_id and from_node_id:
+                    # Pubblica la priority request a ogni ciclo finché siamo vicini.
+                    if distance <= self.traffic_light_stop_distance * 3:
+                        self.publish_priority_request(
+                            from_node_id,
+                            to_node_id,
+                            intersection_node_id,
+                            goal.mission_id
+                        )
 
+                    # Se siamo nella zona di stop, aspettiamo verde.
+                    if distance <= self.traffic_light_stop_distance:
+                        allowed = self.is_movement_allowed(
+                            from_node_id, to_node_id, intersection_node_id
+                        )
+
+                        if not allowed:
+                            if self.state != ExecutorState.WAITING_TRAFFIC_LIGHT:
+                                self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
+                                self.get_logger().info(
+                                    f"[TL] Stop al semaforo | "
+                                    f"intersection={intersection_node_id} | "
+                                    f"{from_node_id}->{to_node_id}"
+                                )
+
+                            self.stop_vehicle()
+
+                            feedback = self._make_feedback(goal, current_wp)
+                            goal_handle.publish_feedback(feedback)
+
+                            rate.sleep()
+                            continue
+
+                        # Verde: riprendi.
+                        if self.state == ExecutorState.WAITING_TRAFFIC_LIGHT:
+                            self.state = ExecutorState.NAVIGATING
+                            self.get_logger().info(
+                                f"[TL] Verde | intersection={intersection_node_id}"
+                            )
+
+            # ── Controllo ostacolo LiDAR ───────────────────────────────
+            obstacle_factor = self.get_obstacle_speed_factor()
+
+            if obstacle_factor == 0.0:
+                if self.state != ExecutorState.OBSTACLE_STOP:
+                    self.state = ExecutorState.OBSTACLE_STOP
+                    self.get_logger().warn(
+                        f"[OBS] Ostacolo rilevato a {self.obstacle_min_distance:.2f} m — stop"
+                    )
+
+                self.stop_vehicle()
+
+                feedback = self._make_feedback(goal, current_wp)
+                goal_handle.publish_feedback(feedback)
+
+                rate.sleep()
+                continue
+
+            if self.state == ExecutorState.OBSTACLE_STOP:
+                self.state = ExecutorState.NAVIGATING
+                self.get_logger().info("[OBS] Via libera — riprendo navigazione")
+
+            # ── Movimento ─────────────────────────────────────────────
+            self.move_towards_waypoint(current_wp, goal.max_speed, obstacle_factor)
+
+            feedback = self._make_feedback(goal, current_wp)
             goal_handle.publish_feedback(feedback)
 
             self.maybe_log_diagnostics(current_wp, distance)
@@ -403,11 +590,47 @@ class NavigationExecutor(Node):
         self.get_logger().error("[EXEC] Loop ROS interrotto")
         return result
 
+    def _make_feedback(self, goal, current_wp):
+        feedback = NavigateToPose.Feedback()
+        feedback.current_x = float(self.current_x)
+        feedback.current_y = float(self.current_y)
+        feedback.distance_remaining = float(self.compute_remaining_distance())
+        feedback.status = (
+            f"mission={goal.mission_id} "
+            f"wp={self.current_waypoint_index + 1}/{len(self.current_path)} "
+            f"state={self.state.value}"
+        )
+        return feedback
+
+    def get_movement_for_intersection(self, intersection_node_id):
+        """
+        Dato il node_id dell'incrocio in avvicinamento, risale al nodo
+        precedente (from) e successivo (to) nel node_path pianificato.
+        Restituisce (from_node_id, to_node_id).
+        """
+        if not hasattr(self, "node_path") or not self.node_path:
+            return None, None
+
+        try:
+            idx = self.node_path.index(intersection_node_id)
+        except ValueError:
+            return None, None
+
+        from_node_id = self.node_path[idx - 1] if idx > 0 else None
+        to_node_id = self.node_path[idx + 1] if idx < len(self.node_path) - 1 else None
+
+        return from_node_id, to_node_id
+
     # ------------------------------------------------------------------
     # PATH PLANNING
     # ------------------------------------------------------------------
 
     def build_navigation_path(self, start_x, start_y, target_x, target_y):
+        """
+        Restituisce (waypoints, node_path).
+        node_path è la sequenza di nodi del grafo attraversati,
+        necessaria per risalire ai movimenti agli incroci.
+        """
         start_projection = self.find_nearest_edge_projection(start_x, start_y)
         target_projection = self.find_nearest_edge_projection(target_x, target_y)
 
@@ -443,9 +666,11 @@ class NavigationExecutor(Node):
                 if node_path is None:
                     continue
 
-                total_cost = cost
-                total_cost += self.distance_to_node_on_edge(start_projection, s)
-                total_cost += self.distance_to_node_on_edge(target_projection, t)
+                total_cost = (
+                    cost
+                    + self.distance_to_node_on_edge(start_projection, s)
+                    + self.distance_to_node_on_edge(target_projection, t)
+                )
 
                 self.get_logger().info(
                     f"[PATH] Candidate | "
@@ -465,12 +690,9 @@ class NavigationExecutor(Node):
 
         waypoints = []
 
-        # Primo punto: proiezione della posizione sulla corsia.
         start_lane = self.project_point_to_lane(
-            start_projection,
-            best_node_path[0]
+            start_projection, best_node_path[0]
         )
-
         waypoints.append({
             "x": start_lane["x"],
             "y": start_lane["y"],
@@ -480,20 +702,15 @@ class NavigationExecutor(Node):
             "speed_limit": start_edge["speed_limit"]
         })
 
-        # Segmenti tra nodi.
         for i in range(len(best_node_path) - 1):
             current_node_id = best_node_path[i]
             next_node_id = best_node_path[i + 1]
 
             edge = self.get_edge_between(current_node_id, next_node_id)
 
-            # Punto appena uscito dal nodo corrente sulla corsia dell'edge.
             exit_from_current = self.node_to_lane_point(
-                current_node_id,
-                next_node_id,
-                mode="exit"
+                current_node_id, next_node_id, mode="exit"
             )
-
             waypoints.append({
                 "x": exit_from_current["x"],
                 "y": exit_from_current["y"],
@@ -503,13 +720,9 @@ class NavigationExecutor(Node):
                 "speed_limit": edge["speed_limit"]
             })
 
-            # Punto prima di arrivare al nodo successivo.
             approach_next = self.node_to_lane_point(
-                next_node_id,
-                current_node_id,
-                mode="approach"
+                next_node_id, current_node_id, mode="approach"
             )
-
             waypoints.append({
                 "x": approach_next["x"],
                 "y": approach_next["y"],
@@ -519,12 +732,9 @@ class NavigationExecutor(Node):
                 "speed_limit": edge["speed_limit"]
             })
 
-        # Ultimo punto: target proiettato sulla corsia.
         target_lane = self.project_point_to_lane(
-            target_projection,
-            best_node_path[-1]
+            target_projection, best_node_path[-1]
         )
-
         waypoints.append({
             "x": target_lane["x"],
             "y": target_lane["y"],
@@ -536,7 +746,7 @@ class NavigationExecutor(Node):
 
         waypoints = self.simplify_waypoints(waypoints)
 
-        return waypoints
+        return waypoints, best_node_path
 
     def shortest_path(self, start_node_id, target_node_id):
         queue = [(0.0, start_node_id, [])]
@@ -557,10 +767,7 @@ class NavigationExecutor(Node):
 
             for neighbor_id, edge_id, length in self.adj.get(node_id, []):
                 if neighbor_id not in visited:
-                    heapq.heappush(
-                        queue,
-                        (cost + length, neighbor_id, new_path)
-                    )
+                    heapq.heappush(queue, (cost + length, neighbor_id, new_path))
 
         return None, float("inf")
 
@@ -573,12 +780,7 @@ class NavigationExecutor(Node):
             b = self.nodes[edge["to"]]
 
             proj = self.project_point_on_segment(
-                x,
-                y,
-                a["x"],
-                a["y"],
-                b["x"],
-                b["y"]
+                x, y, a["x"], a["y"], b["x"], b["y"]
             )
 
             d = self.distance_xy(x, y, proj["x"], proj["y"])
@@ -610,11 +812,7 @@ class NavigationExecutor(Node):
         t = ((px - ax) * dx + (py - ay) * dy) / denom
         t = max(0.0, min(1.0, t))
 
-        return {
-            "x": ax + t * dx,
-            "y": ay + t * dy,
-            "t": t
-        }
+        return {"x": ax + t * dx, "y": ay + t * dy, "t": t}
 
     def project_point_to_lane(self, projection, destination_node_id):
         edge = projection["edge"]
@@ -623,19 +821,14 @@ class NavigationExecutor(Node):
         b = self.nodes[edge["to"]]
 
         if destination_node_id == edge["to"]:
-            from_node = a
-            to_node = b
+            from_node, to_node = a, b
         else:
-            from_node = b
-            to_node = a
+            from_node, to_node = b, a
 
         lane_x, lane_y = self.apply_right_lane_offset(
-            projection["x"],
-            projection["y"],
-            from_node["x"],
-            from_node["y"],
-            to_node["x"],
-            to_node["y"]
+            projection["x"], projection["y"],
+            from_node["x"], from_node["y"],
+            to_node["x"], to_node["y"]
         )
 
         return {"x": lane_x, "y": lane_y}
@@ -658,36 +851,33 @@ class NavigationExecutor(Node):
         c = self.intersection_clearance
 
         if mode == "exit":
-            # Appena dopo essere usciti dall'incrocio verso other_node.
+            # Appena usciti dall'incrocio node verso other_node:
+            # ci spostiamo AVANTI di c lungo la direzione node->other.
             base_x = node["x"] + ux * c
             base_y = node["y"] + uy * c
 
-            lane_from_x = node["x"]
-            lane_from_y = node["y"]
-            lane_to_x = other["x"]
-            lane_to_y = other["y"]
+            lane_from_x, lane_from_y = node["x"], node["y"]
+            lane_to_x, lane_to_y = other["x"], other["y"]
 
         elif mode == "approach":
-            # Prima di entrare nell'incrocio arrivando da other_node verso node.
-            base_x = node["x"] + ux * c
-            base_y = node["y"] + uy * c
+            # In avvicinamento al nodo node provenendo da other_node:
+            # la direzione di marcia è other -> node (ux,uy punta da node verso other,
+            # quindi la direzione opposta è -ux, -uy).
+            # Ci posizioniamo a distanza c dal nodo, sul lato da cui arriviamo.
+            base_x = node["x"] - ux * c   # FIX: era +ux*c (direzione sbagliata)
+            base_y = node["y"] - uy * c
 
-            # Qui la direzione reale di marcia è other -> node.
-            lane_from_x = other["x"]
-            lane_from_y = other["y"]
-            lane_to_x = node["x"]
-            lane_to_y = node["y"]
+            # La direzione di marcia reale è other -> node.
+            lane_from_x, lane_from_y = other["x"], other["y"]
+            lane_to_x, lane_to_y = node["x"], node["y"]
 
         else:
             raise RuntimeError(f"mode non valido: {mode}")
 
         lane_x, lane_y = self.apply_right_lane_offset(
-            base_x,
-            base_y,
-            lane_from_x,
-            lane_from_y,
-            lane_to_x,
-            lane_to_y
+            base_x, base_y,
+            lane_from_x, lane_from_y,
+            lane_to_x, lane_to_y
         )
 
         return {"x": lane_x, "y": lane_y}
@@ -704,6 +894,7 @@ class NavigationExecutor(Node):
         ux = dx / length
         uy = dy / length
 
+        # Vettore perpendicolare destra (rotazione +90°: right = (uy, -ux)).
         right_x = uy
         right_y = -ux
 
@@ -714,17 +905,14 @@ class NavigationExecutor(Node):
     def distance_to_node_on_edge(self, projection, node_id):
         node = self.nodes[node_id]
         return self.distance_xy(
-            projection["x"],
-            projection["y"],
-            node["x"],
-            node["y"]
+            projection["x"], projection["y"],
+            node["x"], node["y"]
         )
 
     def get_edge_between(self, a, b):
         for edge in self.edges:
-            if edge["from"] == a and edge["to"] == b:
-                return edge
-            if edge["from"] == b and edge["to"] == a:
+            if (edge["from"] == a and edge["to"] == b) or \
+               (edge["from"] == b and edge["to"] == a):
                 return edge
 
         raise RuntimeError(f"nessun edge tra {a} e {b}")
@@ -743,7 +931,7 @@ class NavigationExecutor(Node):
                 result.append(wp)
             else:
                 self.get_logger().debug(
-                    f"[PATH] Waypoint rimosso perché troppo vicino | "
+                    f"[PATH] Waypoint rimosso (troppo vicino) | "
                     f"d={d:.2f} | wp=({wp['x']:.2f},{wp['y']:.2f})"
                 )
 
@@ -753,7 +941,7 @@ class NavigationExecutor(Node):
     # CONTROLLO MOVIMENTO
     # ------------------------------------------------------------------
 
-    def move_towards_waypoint(self, waypoint, requested_max_speed):
+    def move_towards_waypoint(self, waypoint, requested_max_speed, obstacle_factor=1.0):
         dx = waypoint["x"] - self.current_x
         dy = waypoint["y"] - self.current_y
 
@@ -766,17 +954,11 @@ class NavigationExecutor(Node):
             waypoint.get("speed_limit", self.default_map_speed_limit)
         )
 
-        max_speed = float(requested_max_speed)
-        if max_speed <= 0.0:
-            max_speed = self.default_max_speed
-
+        max_speed = float(requested_max_speed) if float(requested_max_speed) > 0.0 else self.default_max_speed
         max_speed = min(max_speed, edge_speed_limit)
 
         angular_speed = self.angular_k * angle_error
-        angular_speed = max(
-            -self.max_angular_speed,
-            min(self.max_angular_speed, angular_speed)
-        )
+        angular_speed = max(-self.max_angular_speed, min(self.max_angular_speed, angular_speed))
 
         abs_error = abs(angle_error)
 
@@ -787,12 +969,13 @@ class NavigationExecutor(Node):
             linear_speed = min(max_speed, self.linear_k * distance)
             motion_mode = "FORWARD"
 
-        # Rallenta vicino al waypoint.
         if distance < 1.5:
             linear_speed = min(linear_speed, 0.35)
-
         if distance < 0.8:
             linear_speed = min(linear_speed, 0.20)
+
+        # Applica il fattore ostacolo.
+        linear_speed *= obstacle_factor
 
         cmd = Twist()
         cmd.linear.x = float(linear_speed)
@@ -807,21 +990,19 @@ class NavigationExecutor(Node):
             "linear_speed": linear_speed,
             "angular_speed": angular_speed,
             "motion_mode": motion_mode,
-            "max_speed": max_speed
+            "max_speed": max_speed,
+            "obstacle_factor": obstacle_factor
         }
 
     def stop_vehicle(self):
         self.cmd_vel_pub.publish(Twist())
-        self.get_logger().info("[CMD] Stop vehicle pubblicato")
 
     # ------------------------------------------------------------------
     # LOG
     # ------------------------------------------------------------------
 
     def log_path(self, path):
-        self.get_logger().info(
-            f"[PATH] Path calcolato | waypoints={len(path)}"
-        )
+        self.get_logger().info(f"[PATH] Path calcolato | waypoints={len(path)}")
 
         if not self.path_log_enabled:
             return
@@ -847,6 +1028,19 @@ class NavigationExecutor(Node):
 
         ctrl = waypoint.get("_last_control", {})
 
+        self.get_logger().info(
+            f"[DIAG] mission={self.current_mission_id} | "
+            f"state={self.state.value} | "
+            f"pos=({self.current_x:.2f},{self.current_y:.2f}) | "
+            f"yaw={self.current_yaw:.2f} | "
+            f"dist_to_wp={distance:.2f} | "
+            f"mode={ctrl.get('motion_mode', '?')} | "
+            f"v={ctrl.get('linear_speed', 0.0):.2f} | "
+            f"w={ctrl.get('angular_speed', 0.0):.2f} | "
+            f"obs={self.obstacle_min_distance:.2f} | "
+            f"obs_factor={ctrl.get('obstacle_factor', 1.0):.2f}"
+        )
+
     # ------------------------------------------------------------------
     # UTILITY
     # ------------------------------------------------------------------
@@ -859,32 +1053,17 @@ class NavigationExecutor(Node):
             return 0.0
 
         total = 0.0
-
-        current = {
-            "x": self.current_x,
-            "y": self.current_y
-        }
+        current = {"x": self.current_x, "y": self.current_y}
 
         for i in range(self.current_waypoint_index, len(self.current_path)):
             wp = self.current_path[i]
-            total += self.distance_xy(
-                current["x"],
-                current["y"],
-                wp["x"],
-                wp["y"]
-            )
+            total += self.distance_xy(current["x"], current["y"], wp["x"], wp["y"])
             current = wp
 
         return total
 
     def normalize_angle(self, angle):
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-
-        return angle
+        return math.atan2(math.sin(angle), math.cos(angle))
 
     def distance_xy(self, x1, y1, x2, y2):
         dx = x2 - x1

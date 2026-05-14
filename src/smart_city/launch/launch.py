@@ -45,12 +45,22 @@ def bridge_for_vehicle(vehicle_id):
 def navigation_executor_parameters(
     vehicle_id,
     city_map_file,
-    vehicles_file
+    vehicles_file,
+    spawn_x=0.0,
+    spawn_y=0.0,
+    spawn_yaw=0.0
 ):
     return {
         "vehicle_id": vehicle_id,
         "map_config_file": city_map_file,
         "vehicles_config_file": vehicles_file,
+
+        # Posizione di spawn nel mondo Gazebo.
+        # Necessaria per trasformare l'odometria locale
+        # in coordinate mondo corrette.
+        "initial_x": spawn_x,
+        "initial_y": spawn_y,
+        "initial_yaw": spawn_yaw,
 
         "default_max_speed": 2.8,
 
@@ -83,7 +93,10 @@ def navigation_executor_node(
     vehicle_id,
     delay,
     city_map_file,
-    vehicles_file
+    vehicles_file,
+    spawn_x=0.0,
+    spawn_y=0.0,
+    spawn_yaw=0.0
 ):
     return TimerAction(
         period=delay,
@@ -98,7 +111,10 @@ def navigation_executor_node(
                 parameters=[navigation_executor_parameters(
                     vehicle_id,
                     city_map_file,
-                    vehicles_file
+                    vehicles_file,
+                    spawn_x=spawn_x,
+                    spawn_y=spawn_y,
+                    spawn_yaw=spawn_yaw
                 )],
 
                 remappings=navigation_executor_remappings(
@@ -117,7 +133,10 @@ def bus_nodes(
     city_map_file,
     vehicles_file,
     bus_paths_file,
-    parkings_file
+    parkings_file,
+    spawn_x=0.0,
+    spawn_y=0.0,
+    spawn_yaw=0.0
 ):
     return TimerAction(
         period=delay,
@@ -132,7 +151,10 @@ def bus_nodes(
                 parameters=[navigation_executor_parameters(
                     bus_id,
                     city_map_file,
-                    vehicles_file
+                    vehicles_file,
+                    spawn_x=spawn_x,
+                    spawn_y=spawn_y,
+                    spawn_yaw=spawn_yaw
                 )],
 
                 remappings=navigation_executor_remappings(
@@ -173,7 +195,10 @@ def taxi_nodes(
     delay,
     city_map_file,
     vehicles_file,
-    parkings_file
+    parkings_file,
+    spawn_x=0.0,
+    spawn_y=0.0,
+    spawn_yaw=0.0
 ):
     return TimerAction(
         period=delay,
@@ -188,7 +213,10 @@ def taxi_nodes(
                 parameters=[navigation_executor_parameters(
                     taxi_id,
                     city_map_file,
-                    vehicles_file
+                    vehicles_file,
+                    spawn_x=spawn_x,
+                    spawn_y=spawn_y,
+                    spawn_yaw=spawn_yaw
                 )],
 
                 remappings=navigation_executor_remappings(
@@ -350,15 +378,17 @@ def generate_launch_description():
 
     vehicles_data = load_json(vehicles_file)
     city_map = load_json(city_map_file)
-    traffic_lights_data = load_json(
-        traffic_lights_file
-    )
+    traffic_lights_data = load_json(traffic_lights_file)
 
     vehicles = vehicles_data["vehicles"]
 
-    node_degrees = compute_node_degrees(
-        city_map
-    )
+    # Lookup rapido spawn per vehicle_id
+    spawn_by_id = {
+        v["id"]: v.get("spawn", {"x": 0.0, "y": 0.0, "yaw": 0.0})
+        for v in vehicles
+    }
+
+    node_degrees = compute_node_degrees(city_map)
 
     bus_ids = [
         v["id"]
@@ -390,18 +420,14 @@ def generate_launch_description():
         value=model_path
     )
 
-    gazebo_software_rendering = (
-        SetEnvironmentVariable(
-            name="LIBGL_ALWAYS_SOFTWARE",
-            value="1"
-        )
+    gazebo_software_rendering = SetEnvironmentVariable(
+        name="LIBGL_ALWAYS_SOFTWARE",
+        value="1"
     )
 
-    gazebo_render_engine = (
-        SetEnvironmentVariable(
-            name="GZ_RENDER_ENGINE",
-            value="ogre"
-        )
+    gazebo_render_engine = SetEnvironmentVariable(
+        name="GZ_RENDER_ENGINE",
+        value="ogre"
     )
 
     gazebo = IncludeLaunchDescription(
@@ -440,8 +466,7 @@ def generate_launch_description():
                 executable="bus_booking_generator",
 
                 parameters=[{
-                    "bus_stops_config_file":
-                        bus_stops_file
+                    "bus_stops_config_file": bus_stops_file
                 }],
 
                 output="screen"
@@ -469,11 +494,8 @@ def generate_launch_description():
                 executable="private_car_simulator_node",
 
                 parameters=[{
-                    "vehicles_config_file":
-                        vehicles_file,
-
-                    "map_config_file":
-                        city_map_file
+                    "vehicles_config_file": vehicles_file,
+                    "map_config_file": city_map_file
                 }],
 
                 output="screen"
@@ -494,15 +516,10 @@ def generate_launch_description():
 
     delay = 4.0
 
-    for light in traffic_lights_data[
-        "traffic_lights"
-    ]:
+    for light in traffic_lights_data["traffic_lights"]:
         node_id = light["node_id"]
 
-        degree = node_degrees.get(
-            node_id,
-            0
-        )
+        degree = node_degrees.get(node_id, 0)
 
         if degree < 3 or degree > 4:
             continue
@@ -518,6 +535,10 @@ def generate_launch_description():
         delay += 0.15
 
     for bus_id in bus_ids:
+        spawn = spawn_by_id.get(
+            bus_id, {"x": 0.0, "y": 0.0, "yaw": 0.0}
+        )
+
         launch_items.append(
             bus_nodes(
                 bus_id=bus_id,
@@ -527,13 +548,21 @@ def generate_launch_description():
                 vehicles_file=vehicles_file,
 
                 bus_paths_file=bus_paths_file,
-                parkings_file=parkings_file
+                parkings_file=parkings_file,
+
+                spawn_x=float(spawn["x"]),
+                spawn_y=float(spawn["y"]),
+                spawn_yaw=float(spawn.get("yaw", 0.0))
             )
         )
 
         delay += 0.5
 
     for taxi_id in taxi_ids:
+        spawn = spawn_by_id.get(
+            taxi_id, {"x": 0.0, "y": 0.0, "yaw": 0.0}
+        )
+
         launch_items.append(
             taxi_nodes(
                 taxi_id=taxi_id,
@@ -542,29 +571,37 @@ def generate_launch_description():
                 city_map_file=city_map_file,
                 vehicles_file=vehicles_file,
 
-                parkings_file=parkings_file
+                parkings_file=parkings_file,
+
+                spawn_x=float(spawn["x"]),
+                spawn_y=float(spawn["y"]),
+                spawn_yaw=float(spawn.get("yaw", 0.0))
             )
         )
 
         delay += 0.5
 
     for car_id in private_car_ids:
+        spawn = spawn_by_id.get(
+            car_id, {"x": 0.0, "y": 0.0, "yaw": 0.0}
+        )
+
         launch_items.append(
             navigation_executor_node(
                 vehicle_id=car_id,
                 delay=delay,
 
                 city_map_file=city_map_file,
-                vehicles_file=vehicles_file
+                vehicles_file=vehicles_file,
+
+                spawn_x=float(spawn["x"]),
+                spawn_y=float(spawn["y"]),
+                spawn_yaw=float(spawn.get("yaw", 0.0))
             )
         )
 
         delay += 0.5
 
-    launch_items.append(
-        private_car_controller
-    )
+    launch_items.append(private_car_controller)
 
-    return LaunchDescription(
-        launch_items
-    )
+    return LaunchDescription(launch_items)
