@@ -85,7 +85,7 @@ class NavigationExecutor(Node):
         self.initial_x = float(self.get_parameter("initial_x").value)
         self.initial_y = float(self.get_parameter("initial_y").value)
         self.initial_yaw = float(self.get_parameter("initial_yaw").value)
-
+        self.last_priority_request_time = {}
         # ------------------------------------------------------------
         # STATO
         # ------------------------------------------------------------
@@ -447,6 +447,22 @@ class NavigationExecutor(Node):
             return result
 
         rate = self.create_rate(20)
+        waypoint_start_time = self.get_clock().now()
+
+        def compute_timeout(wp):
+            """
+            Timeout dinamico: almeno 8s, ma proporzionale alla distanza
+            dal waypoint al momento in cui iniziamo a lavorarci.
+            Usa velocità minima 0.5 m/s come riferimento pessimistico.
+            """
+            dx = wp["x"] - self.current_x
+            dy = wp["y"] - self.current_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            return max(8.0, dist / 0.5)
+
+        waypoint_timeout_sec = compute_timeout(
+            self.current_path[self.current_waypoint_index]
+        )
 
         while rclpy.ok():
 
@@ -493,14 +509,36 @@ class NavigationExecutor(Node):
                     f"wp=({current_wp['x']:.2f},{current_wp['y']:.2f})"
                 )
                 self.current_waypoint_index += 1
+                waypoint_start_time = self.get_clock().now()
+                if self.current_waypoint_index < len(self.current_path):
+                    waypoint_timeout_sec = compute_timeout(
+                        self.current_path[self.current_waypoint_index]
+                    )
+                rate.sleep()
+                continue
+
+            # ── Timeout waypoint ───────────────────────────────────────
+            elapsed_on_wp = (
+                self.get_clock().now() - waypoint_start_time
+            ).nanoseconds / 1e9
+
+            if elapsed_on_wp > waypoint_timeout_sec:
+                self.get_logger().warn(
+                    f"[WP] Timeout waypoint {self.current_waypoint_index} "
+                    f"dopo {elapsed_on_wp:.1f}s (timeout={waypoint_timeout_sec:.1f}s) | "
+                    f"dist={distance:.2f} | "
+                    f"wp=({current_wp['x']:.2f},{current_wp['y']:.2f}) — skip"
+                )
+                self.current_waypoint_index += 1
+                waypoint_start_time = self.get_clock().now()
+                if self.current_waypoint_index < len(self.current_path):
+                    waypoint_timeout_sec = compute_timeout(
+                        self.current_path[self.current_waypoint_index]
+                    )
+                rate.sleep()
                 continue
 
             # ── Controllo semaforo ─────────────────────────────────────
-            #
-            # Se il waypoint corrente è di tipo approach_intersection,
-            # significa che stiamo avvicinandoci a un nodo-incrocio.
-            # Usiamo node_path per risalire a from_node e to_node.
-            #
             if current_wp.get("kind") == "approach_intersection":
                 intersection_node_id = current_wp.get("node_id")
                 from_node_id, to_node_id = self.get_movement_for_intersection(
@@ -508,16 +546,18 @@ class NavigationExecutor(Node):
                 )
 
                 if intersection_node_id and from_node_id:
-                    # Pubblica la priority request a ogni ciclo finché siamo vicini.
                     if distance <= self.traffic_light_stop_distance * 3:
-                        self.publish_priority_request(
-                            from_node_id,
-                            to_node_id,
-                            intersection_node_id,
-                            goal.mission_id
-                        )
+                        last_sent = self.last_priority_request_time.get(intersection_node_id, 0.0)
+                        now_sec = self.get_clock().now().nanoseconds / 1e9
+                        if now_sec - last_sent >= 2.0:
+                            self.publish_priority_request(
+                                from_node_id,
+                                to_node_id,
+                                intersection_node_id,
+                                goal.mission_id
+                            )
+                            self.last_priority_request_time[intersection_node_id] = now_sec
 
-                    # Se siamo nella zona di stop, aspettiamo verde.
                     if distance <= self.traffic_light_stop_distance:
                         allowed = self.is_movement_allowed(
                             from_node_id, to_node_id, intersection_node_id
@@ -533,6 +573,7 @@ class NavigationExecutor(Node):
                                 )
 
                             self.stop_vehicle()
+                            waypoint_start_time = self.get_clock().now()
 
                             feedback = self._make_feedback(goal, current_wp)
                             goal_handle.publish_feedback(feedback)
@@ -540,7 +581,6 @@ class NavigationExecutor(Node):
                             rate.sleep()
                             continue
 
-                        # Verde: riprendi.
                         if self.state == ExecutorState.WAITING_TRAFFIC_LIGHT:
                             self.state = ExecutorState.NAVIGATING
                             self.get_logger().info(
@@ -558,6 +598,7 @@ class NavigationExecutor(Node):
                     )
 
                 self.stop_vehicle()
+                waypoint_start_time = self.get_clock().now()
 
                 feedback = self._make_feedback(goal, current_wp)
                 goal_handle.publish_feedback(feedback)
@@ -969,9 +1010,9 @@ class NavigationExecutor(Node):
             linear_speed = min(max_speed, self.linear_k * distance)
             motion_mode = "FORWARD"
 
-        if distance < 1.5:
-            linear_speed = min(linear_speed, 0.35)
         if distance < 0.8:
+            linear_speed = min(linear_speed, 0.35)
+        if distance < 0.4:
             linear_speed = min(linear_speed, 0.20)
 
         # Applica il fattore ostacolo.
