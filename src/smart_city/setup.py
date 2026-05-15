@@ -49,8 +49,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='marvin, abigail',
-    maintainer_email='marvin@todo.todo, abigail@todo.todo',
+    maintainer='marvin',
+    maintainer_email='marvin@todo.todo',
     description='ROS 2 distributed smart city transport simulation',
     license='MIT',
     extras_require={

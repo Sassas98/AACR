@@ -15,6 +15,13 @@ from ament_index_python.packages import (
 import os
 import json
 
+from launch.actions import (
+    IncludeLaunchDescription,
+    TimerAction,
+    SetEnvironmentVariable,
+    ExecuteProcess
+)
+
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -38,7 +45,6 @@ def bridge_for_vehicle(vehicle_id):
     return [
         f"/{vehicle_id}/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan",
         f"/{vehicle_id}/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist",
-        f"/{vehicle_id}/odom@nav_msgs/msg/Odometry@gz.msgs.Odometry",
     ]
 
 
@@ -79,7 +85,6 @@ def navigation_executor_parameters(
 def navigation_executor_remappings(vehicle_id):
     return [
         ("/cmd_vel", f"/{vehicle_id}/cmd_vel"),
-        ("/odom", f"/{vehicle_id}/odom"),
         ("/scan", f"/{vehicle_id}/scan"),
 
         (
@@ -503,8 +508,20 @@ def generate_launch_description():
         ]
     )
 
+    gz_plugin_path = SetEnvironmentVariable(
+        name="GZ_SIM_SYSTEM_PLUGIN_PATH",
+        value=os.path.join(
+            os.path.expanduser("~"),
+            "AACR",
+            "install",
+            "smart_city_gz_plugins",
+            "lib"
+        )
+    )
+
     launch_items = [
         gazebo_model_path,
+        gz_plugin_path,
         gazebo_software_rendering,
         gazebo_render_engine,
 
