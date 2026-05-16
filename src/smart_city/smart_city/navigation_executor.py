@@ -935,16 +935,18 @@ class NavigationExecutor(Node):
         max_speed = min(max_speed, edge_speed_limit)
 
         angular_speed = self.angular_k * angle_error
-        angular_speed = max(-self.max_angular_speed, min(self.max_angular_speed, angular_speed))
+        angular_speed = -max(-self.max_angular_speed, min(self.max_angular_speed, angular_speed))
 
         abs_error = abs(angle_error)
 
-        if abs_error > 0.60:
-            linear_speed = 0.0
-            motion_mode = "ROTATE_IN_PLACE"
+        if abs_error > 1.20:
+            linear_speed = 0.25
+            motion_mode = "SLOW_TURN"
         else:
             linear_speed = min(max_speed, self.linear_k * distance)
             motion_mode = "FORWARD"
+
+        self.get_logger().info(f"angle_error={abs_error:.2f}")
 
         if distance < 0.8:
             linear_speed = min(linear_speed, 0.35)
