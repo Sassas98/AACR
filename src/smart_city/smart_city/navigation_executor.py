@@ -50,15 +50,15 @@ class NavigationExecutor(Node):
                 ("target_tolerance", 0.45),
 
                 ("lane_width", 1.2),
-                ("lane_offset_ratio", 0.5),
+                ("lane_offset_ratio", 1.0),
                 ("lane_recovery_threshold", 0.15),
                 ("lookahead_distance", 2.0),
 
                 ("intersection_clearance", 2.2),
                 ("traffic_light_stop_distance", 1.5),
 
-                ("obstacle_stop_distance", 0.8),
-                ("obstacle_slow_distance", 1.8),
+                ("obstacle_stop_distance", 3.0),
+                ("obstacle_slow_distance", 5.0),
                 ("obstacle_fov_deg", 60.0),
                 ("obstacle_replan_timeout_sec", 15.0),
 
@@ -762,7 +762,15 @@ class NavigationExecutor(Node):
                     }
 
         if best is None:
-            raise RuntimeError("impossibile proiettare sulla corsia")
+            if allow_blocked:
+                raise RuntimeError("impossibile proiettare sulla corsia")
+            return self.find_nearest_lane_projection(
+                x,
+                y,
+                preferred_edge_id=preferred_edge_id,
+                destination_node_id=destination_node_id,
+                allow_blocked=True
+            )
 
         return best
 
@@ -1513,7 +1521,7 @@ class NavigationExecutor(Node):
             distance = 0.0
 
         ctrl = waypoint.get("_last_control", {}) if waypoint else {}
-
+        return
         self.log_navigation_event(
             f"{reason} | stato={self.state.value} | "
             f"{self.describe_graph_position()} | "

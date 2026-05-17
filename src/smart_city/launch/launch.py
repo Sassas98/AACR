@@ -177,7 +177,7 @@ def bus_nodes(
                 name=f"{bus_id}_bus_path_manager",
 
                 parameters=[{
-                    "vehicle_id": bus_id,
+                    "bus_id": bus_id,
                     "paths_config_file": bus_paths_file,
                     "parkings_config_file": parkings_file
                 }],
@@ -239,7 +239,7 @@ def taxi_nodes(
                 name=f"{taxi_id}_taxi_request_manager",
 
                 parameters=[{
-                    "vehicle_id": taxi_id,
+                    "taxi_id": taxi_id,
                     "parkings_config_file": parkings_file
                 }],
 
@@ -266,7 +266,7 @@ def taxi_nodes(
                 name=f"{taxi_id}_taxi_coordinator",
 
                 parameters=[{
-                    "vehicle_id": taxi_id
+                    "taxi_id": taxi_id
                 }],
 
                 remappings=[
