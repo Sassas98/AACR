@@ -9,7 +9,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 from nav_msgs.msg import Odometry
-
+from geometry_msgs.msg import PoseStamped
 from smart_city_interfaces.action import NavigateToPose
 
 
@@ -21,6 +21,7 @@ class PrivateCarState:
         self.busy = False
         self.last_goal_time = 0.0
         self.goal_handle = None
+        self.has_pose = False
 
 
 class PrivateCarSimulatorNode(Node):
@@ -105,9 +106,9 @@ class PrivateCarSimulatorNode(Node):
             self.private_cars[vehicle_id] = car
 
             self.create_subscription(
-                Odometry,
-                f"/{vehicle_id}/odom",
-                lambda msg, vid=vehicle_id: self.on_odom(msg, vid),
+                PoseStamped,
+                f"/gazebo/model_pose/{vehicle_id}",
+                lambda msg, vid=vehicle_id: self.on_world_pose(msg, vid),
                 10
             )
 
@@ -125,14 +126,15 @@ class PrivateCarSimulatorNode(Node):
     # CALLBACK
     # ------------------------------------------------------------------
 
-    def on_odom(self, msg, vehicle_id):
+    def on_world_pose(self, msg, vehicle_id):
         car = self.private_cars.get(vehicle_id)
 
         if car is None:
             return
 
-        car.x = msg.pose.pose.position.x
-        car.y = msg.pose.pose.position.y
+        car.x = msg.pose.position.x
+        car.y = msg.pose.position.y
+        car.has_pose = True
 
     # ------------------------------------------------------------------
     # LOOP
@@ -142,6 +144,8 @@ class PrivateCarSimulatorNode(Node):
         now = time.time()
 
         for car in self.private_cars.values():
+            if not car.has_pose:
+                continue
             if car.busy:
                 continue
 

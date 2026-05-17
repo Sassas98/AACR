@@ -41,10 +41,10 @@ class NavigationExecutor(Node):
                 ("map_config_file", "config/city_map.json"),
                 ("pose_entity_name", ""),
 
-                ("default_max_speed", 2.4),
-                ("linear_k", 1.8),
+                ("default_max_speed", 4.8),
+                ("linear_k", 3.6),
                 ("angular_k", 0.7),
-                ("max_angular_speed", 0.5),
+                ("max_angular_speed", 1.0),
 
                 ("waypoint_tolerance", 0.30),
                 ("target_tolerance", 0.45),
@@ -117,7 +117,8 @@ class NavigationExecutor(Node):
         self.edge_by_id = {}
         self.adj = {}
         self.default_map_speed_limit = 1.4
-        self.blocked_edges = set()
+        self.blocked_edges = {}
+        self.blocked_edge_ttl_sec = 45.0
 
         # Navigazione
         self.current_path = []
@@ -526,19 +527,51 @@ class NavigationExecutor(Node):
 
         self.obstacle_stop_start_time = None
         return True
+    
+    def block_edge_temporarily(self, edge_id):
+        if not edge_id:
+            return
+
+        expire_at = self.get_clock().now().nanoseconds / 1e9 + self.blocked_edge_ttl_sec
+        self.blocked_edges[edge_id] = expire_at
+
+    def cleanup_expired_blocked_edges(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+
+        expired = [
+            edge_id
+            for edge_id, expire_at in self.blocked_edges.items()
+            if expire_at <= now
+        ]
+
+        for edge_id in expired:
+            del self.blocked_edges[edge_id]
+
+    def is_edge_blocked(self, edge_id):
+        self.cleanup_expired_blocked_edges()
+        return edge_id in self.blocked_edges
 
     def mark_current_road_blocked(self, current_wp):
-        if current_wp.get("edge_id"):
-            self.blocked_edges.add(current_wp["edge_id"])
+        edge_id = current_wp.get("edge_id")
 
-        lane_projection = self.find_nearest_lane_projection(
-            self.current_x,
-            self.current_y,
-            preferred_edge_id=current_wp.get("edge_id")
-        )
+        if edge_id:
+            self.block_edge_temporarily(edge_id)
 
-        if lane_projection and lane_projection["edge"]:
-            self.blocked_edges.add(lane_projection["edge"]["id"])
+        try:
+            lane_projection = self.find_nearest_lane_projection(
+                self.current_x,
+                self.current_y,
+                preferred_edge_id=edge_id,
+                allow_blocked=True
+            )
+
+            if lane_projection and lane_projection["edge"]:
+                self.block_edge_temporarily(lane_projection["edge"]["id"])
+
+        except Exception as ex:
+            self.log_navigation_event(
+                f"impossibile localizzare corsia durante blocco strada: {ex}"
+            )
 
         self.log_navigation_event(
             "strade bloccate: " + ", ".join(sorted(self.blocked_edges))
@@ -947,7 +980,7 @@ class NavigationExecutor(Node):
                 return new_path, cost
 
             for neighbor_id, edge_id, length in self.adj.get(node_id, []):
-                if edge_id in self.blocked_edges:
+                if self.is_edge_blocked(edge_id):
                     continue
 
                 if neighbor_id not in visited:
@@ -957,80 +990,6 @@ class NavigationExecutor(Node):
     # ============================================================
     # CORSIE / GEOMETRIA STRADALE
     # ============================================================
-
-    def find_nearest_lane_projection(
-        self,
-        x,
-        y,
-        preferred_edge_id=None,
-        destination_node_id=None,
-        allow_blocked=False
-    ):
-        """
-        Trova il punto più vicino NON al centro strada, ma al centro della corsia destra.
-
-        Restituisce:
-        - edge
-        - centro strada proiettato
-        - punto corsia destra
-        - distanza dalla corsia destra
-        """
-        best = None
-        best_distance = float("inf")
-
-        candidate_edges = self.edges
-
-        if preferred_edge_id in self.edge_by_id:
-            candidate_edges = [self.edge_by_id[preferred_edge_id]]
-
-        for edge in candidate_edges:
-            if not allow_blocked and edge["id"] in self.blocked_edges:
-                continue
-            a = self.nodes[edge["from"]]
-            b = self.nodes[edge["to"]]
-
-            center_projection = self.project_point_on_segment(
-                x, y,
-                a["x"], a["y"],
-                b["x"], b["y"]
-            )
-
-            if destination_node_id is None:
-                dist_to_from = self.distance_xy(x, y, a["x"], a["y"])
-                dist_to_to = self.distance_xy(x, y, b["x"], b["y"])
-                inferred_destination = edge["from"] if dist_to_from < dist_to_to else edge["to"]
-            else:
-                inferred_destination = destination_node_id
-
-            lane_projection = self.project_center_projection_to_right_lane(
-                {
-                    "edge": edge,
-                    "x": center_projection["x"],
-                    "y": center_projection["y"],
-                    "t": center_projection["t"],
-                },
-                inferred_destination
-            )
-
-            distance = self.distance_xy(x, y, lane_projection["x"], lane_projection["y"])
-
-            if distance < best_distance:
-                best_distance = distance
-                best = {
-                    "edge": edge,
-                    "center_x": center_projection["x"],
-                    "center_y": center_projection["y"],
-                    "x": lane_projection["x"],
-                    "y": lane_projection["y"],
-                    "t": center_projection["t"],
-                    "distance": distance,
-                    "destination_node_id": inferred_destination,
-                }
-
-        if best is None:
-            raise RuntimeError("impossibile proiettare sulla corsia")
-
-        return best
 
     def project_center_projection_to_right_lane(self, projection, destination_node_id):
         edge = projection["edge"]
