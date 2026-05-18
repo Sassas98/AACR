@@ -41,18 +41,18 @@ class NavigationExecutor(Node):
                 ("map_config_file", "config/city_map.json"),
                 ("pose_entity_name", ""),
 
-                ("default_max_speed", 4.8),
-                ("linear_k", 3.6),
-                ("angular_k", 0.7),
-                ("max_angular_speed", 1.0),
+                ("default_max_speed", 2.4),
+                ("linear_k", 1.6),
+                ("angular_k", 1.6),
+                ("max_angular_speed", 0.9),
+                ("lookahead_distance", 4.0),
+                ("lane_recovery_threshold", 0.35),
 
                 ("waypoint_tolerance", 0.30),
                 ("target_tolerance", 0.45),
 
                 ("lane_width", 1.2),
                 ("lane_offset_ratio", 1.0),
-                ("lane_recovery_threshold", 0.15),
-                ("lookahead_distance", 2.0),
 
                 ("intersection_clearance", 2.2),
                 ("traffic_light_stop_distance", 1.5),
@@ -336,6 +336,27 @@ class NavigationExecutor(Node):
                 return result
 
             if self.current_waypoint_index >= len(self.current_path):
+                final_wp = self.current_path[-1]
+
+                final_distance = self.distance_xy(
+                    self.current_x,
+                    self.current_y,
+                    final_wp["x"],
+                    final_wp["y"]
+                )
+
+                if final_distance > self.target_tolerance:
+                    self.stop_vehicle()
+                    self.state = ExecutorState.IDLE
+                    goal_handle.abort()
+
+                    result = NavigateToPose.Result()
+                    result.success = False
+                    result.message = (
+                        f"Path terminato ma target non raggiunto: distanza={final_distance:.2f} m"
+                    )
+                    return result
+
                 self.stop_vehicle()
                 self.state = ExecutorState.IDLE
                 goal_handle.succeed()
@@ -343,7 +364,6 @@ class NavigationExecutor(Node):
                 result = NavigateToPose.Result()
                 result.success = True
                 result.message = "Target raggiunto"
-                self.log_navigation_snapshot("target raggiunto", None, 0.0, force=True)
                 return result
 
             current_wp = self.current_path[self.current_waypoint_index]
@@ -375,20 +395,28 @@ class NavigationExecutor(Node):
             elapsed_on_wp = (self.get_clock().now() - waypoint_start_time).nanoseconds / 1e9
 
             if elapsed_on_wp > waypoint_timeout_sec:
-                self.log_navigation_snapshot(
-                    "timeout waypoint, passo al prossimo",
-                    current_wp,
-                    distance_to_wp,
-                    force=True
-                )
-
-                self.current_waypoint_index += 1
-                waypoint_start_time = self.get_clock().now()
-
-                if self.current_waypoint_index < len(self.current_path):
-                    waypoint_timeout_sec = self.compute_waypoint_timeout(
-                        self.current_path[self.current_waypoint_index]
+                if self.obstacle_min_distance <= self.obstacle_stop_distance:
+                    self.log_navigation_snapshot(
+                        f"timeout con ostacolo: blocco strada e ricalcolo",
+                        current_wp,
+                        distance_to_wp,
+                        force=True
                     )
+
+                    self.stop_vehicle()
+                    self.mark_current_road_blocked(current_wp)
+                    self.replan_after_obstacle(goal)
+
+                else:
+                    self.log_navigation_snapshot(
+                        f"timeout senza ostacolo: continuo, non blocco strade",
+                        current_wp,
+                        distance_to_wp,
+                        force=True
+                    )
+
+                    waypoint_start_time = self.get_clock().now()
+                    waypoint_timeout_sec = self.compute_waypoint_timeout(current_wp)
 
                 rate.sleep()
                 continue
@@ -471,9 +499,30 @@ class NavigationExecutor(Node):
         )
         return feedback
 
-    def compute_waypoint_timeout(self, wp):
-        dist = self.distance_xy(self.current_x, self.current_y, wp["x"], wp["y"])
-        return max(8.0, dist / 0.5)
+    def compute_waypoint_timeout(self, waypoint):
+        speed_limit = max(
+            0.5,
+            float(waypoint.get("speed_limit", self.default_max_speed))
+        )
+
+        if self.current_waypoint_index == 0:
+            previous_x = self.current_x
+            previous_y = self.current_y
+        else:
+            previous_wp = self.current_path[self.current_waypoint_index - 1]
+            previous_x = previous_wp["x"]
+            previous_y = previous_wp["y"]
+
+        segment_length = self.distance_xy(
+            previous_x,
+            previous_y,
+            waypoint["x"],
+            waypoint["y"]
+        )
+
+        expected_time = segment_length / speed_limit
+
+        return max(8.0, expected_time * 4.0)
 
     # ============================================================
     # OSTACOLI
@@ -1116,11 +1165,36 @@ class NavigationExecutor(Node):
             self.current_x,
             self.current_y,
             preferred_edge_id=preferred_edge_id,
-            destination_node_id=destination_node_id
+            destination_node_id=destination_node_id,
+            allow_blocked=True
         )
-
+        
         edge = lane_projection["edge"]
 
+        dist_current_to_wp = self.distance_xy(
+            self.current_x,
+            self.current_y,
+            waypoint["x"],
+            waypoint["y"]
+        )
+
+        # SE SONO VICINO AL WAYPOINT:
+        # smetto di fare lane recovery/lookahead
+        # e punto direttamente il waypoint
+        if dist_current_to_wp <= max(
+            self.lookahead_distance,
+            self.waypoint_tolerance * 4.0
+        ):
+            return {
+                "x": waypoint["x"],
+                "y": waypoint["y"],
+                "mode_prefix": "WAYPOINT_FINAL_APPROACH",
+                "lane_error": lane_projection["distance"],
+                "edge_id": edge["id"],
+            }
+
+        # SOLO SE SONO LONTANO E FUORI CORSIA:
+        # faccio lane recovery
         if lane_projection["distance"] > self.lane_recovery_threshold:
             return {
                 "x": lane_projection["x"],
@@ -1129,6 +1203,8 @@ class NavigationExecutor(Node):
                 "lane_error": lane_projection["distance"],
                 "edge_id": edge["id"],
             }
+
+        # altrimenti lookahead normale...
 
         lookahead = self.compute_lane_lookahead_point(
             edge,
@@ -1303,6 +1379,9 @@ class NavigationExecutor(Node):
         if abs_error > 0.35:
             linear_speed = 0.0
             motion_mode = "TURN_IN_PLACE"
+        elif abs_error > 0.15:
+            linear_speed = min(max_speed, self.linear_k * distance, 0.25)
+            motion_mode = "SLOW_TURN"
         else:
             linear_speed = min(max_speed, self.linear_k * distance)
             motion_mode = "FORWARD"
@@ -1480,7 +1559,7 @@ class NavigationExecutor(Node):
             distance = 0.0
 
         ctrl = waypoint.get("_last_control", {}) if waypoint else {}
-        return
+        #return
         self.log_navigation_event(
             f"{reason} | stato={self.state.value} | "
             f"{self.describe_graph_position()} | "
