@@ -107,6 +107,29 @@ class NavigationExecutor(Node):
         self.last_scan_stamp = None
         self.obstacle_stop_start_time = None
 
+        self.other_vehicles = {}
+        self.vehicle_state_publish_period_sec = 0.2
+        self.vehicle_stop_distance = 4.0
+        self.vehicle_slow_distance = 7.0
+        self.vehicle_corridor_width = 2.0
+        self.vehicle_state_pub = self.create_publisher(
+            String,
+            "/vehicle_states",
+            100
+        )
+
+        self.vehicle_state_sub = self.create_subscription(
+            String,
+            "/vehicle_states",
+            self.on_vehicle_state,
+            100
+        )
+
+        self.vehicle_state_timer = self.create_timer(
+            self.vehicle_state_publish_period_sec,
+            self.publish_vehicle_state
+        )
+
         # Semafori
         self.traffic_light_statuses = {}
         self.last_priority_request_time = {}
@@ -270,6 +293,36 @@ class NavigationExecutor(Node):
             angle += msg.angle_increment
 
         self.obstacle_min_distance = min_dist
+
+    def publish_vehicle_state(self):
+        if not self.has_odom:
+            return
+
+        payload = {
+            "vehicle_id": self.vehicle_id,
+            "x": self.current_x,
+            "y": self.current_y,
+            "yaw": self.current_yaw,
+            "stamp": self.get_clock().now().nanoseconds / 1e9,
+        }
+
+        msg = String()
+        msg.data = json.dumps(payload)
+        self.vehicle_state_pub.publish(msg)
+
+
+    def on_vehicle_state(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+
+        vehicle_id = data.get("vehicle_id")
+
+        if not vehicle_id or vehicle_id == self.vehicle_id:
+            return
+
+        self.other_vehicles[vehicle_id] = data
 
     def on_traffic_light_status(self, msg):
         try:
@@ -528,19 +581,76 @@ class NavigationExecutor(Node):
     # OSTACOLI
     # ============================================================
 
-    def get_obstacle_speed_factor(self):
-        d = self.obstacle_min_distance
+    def get_vehicle_proximity_factor(self):
+        if not self.has_odom:
+            return 1.0
 
-        if d <= self.obstacle_stop_distance:
+        now = self.get_clock().now().nanoseconds / 1e9
+
+        forward_x = math.cos(self.current_yaw)
+        forward_y = math.sin(self.current_yaw)
+
+        min_forward_dist = float("inf")
+        closest_vehicle = None
+
+        for vehicle_id, other in list(self.other_vehicles.items()):
+            stamp = float(other.get("stamp", 0.0))
+
+            if now - stamp > 1.0:
+                continue
+
+            dx = float(other["x"]) - self.current_x
+            dy = float(other["y"]) - self.current_y
+
+            forward_dist = dx * forward_x + dy * forward_y
+            side_dist = abs(-forward_y * dx + forward_x * dy)
+
+            if forward_dist <= 0.0:
+                continue
+
+            if side_dist > self.vehicle_corridor_width:
+                continue
+
+            if forward_dist < min_forward_dist:
+                min_forward_dist = forward_dist
+                closest_vehicle = vehicle_id
+
+        if min_forward_dist <= self.vehicle_stop_distance:
+            self.log_navigation_event(
+                f"vehicle proximity stop: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m"
+            )
             return 0.0
 
-        if d <= self.obstacle_slow_distance:
-            ratio = (d - self.obstacle_stop_distance) / (
-                self.obstacle_slow_distance - self.obstacle_stop_distance
+        if min_forward_dist <= self.vehicle_slow_distance:
+            ratio = (
+                (min_forward_dist - self.vehicle_stop_distance)
+                / (self.vehicle_slow_distance - self.vehicle_stop_distance)
             )
+
+            self.log_navigation_event(
+                f"vehicle proximity slow: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m"
+            )
+
             return max(0.0, min(1.0, ratio))
 
         return 1.0
+
+    def get_obstacle_speed_factor(self):
+        d = self.obstacle_min_distance
+
+        lidar_factor = 1.0
+
+        if d <= self.obstacle_stop_distance:
+            lidar_factor = 0.0
+        elif d <= self.obstacle_slow_distance:
+            lidar_factor = (d - self.obstacle_stop_distance) / (
+                self.obstacle_slow_distance - self.obstacle_stop_distance
+            )
+            lidar_factor = max(0.0, min(1.0, lidar_factor))
+
+        vehicle_factor = self.get_vehicle_proximity_factor()
+
+        return min(lidar_factor, vehicle_factor)
 
     def handle_obstacle_stop(self, goal, current_wp):
         now = self.get_clock().now()
@@ -1168,7 +1278,7 @@ class NavigationExecutor(Node):
             destination_node_id=destination_node_id,
             allow_blocked=True
         )
-        
+
         edge = lane_projection["edge"]
 
         dist_current_to_wp = self.distance_xy(
