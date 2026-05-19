@@ -51,8 +51,8 @@ class NavigationExecutor(Node):
                 ("waypoint_tolerance", 0.30),
                 ("target_tolerance", 0.45),
 
-                ("lane_width", 1.2),
-                ("lane_offset_ratio", 1.0),
+                ("lane_width", 2.4),
+                ("lane_offset_ratio", 2.0),
 
                 ("intersection_clearance", 2.2),
                 ("traffic_light_stop_distance", 1.5),
@@ -111,7 +111,7 @@ class NavigationExecutor(Node):
         self.vehicle_state_publish_period_sec = 0.2
         self.vehicle_stop_distance = 4.0
         self.vehicle_slow_distance = 7.0
-        self.vehicle_corridor_width = 2.0
+        self.vehicle_corridor_width = 0.8
         self.vehicle_state_pub = self.create_publisher(
             String,
             "/vehicle_states",
@@ -596,19 +596,60 @@ class NavigationExecutor(Node):
         for vehicle_id, other in list(self.other_vehicles.items()):
             stamp = float(other.get("stamp", 0.0))
 
+            # Ignoro stati vecchi
             if now - stamp > 1.0:
                 continue
 
-            dx = float(other["x"]) - self.current_x
-            dy = float(other["y"]) - self.current_y
+            other_x = float(other.get("x", 0.0))
+            other_y = float(other.get("y", 0.0))
+            other_yaw = float(other.get("yaw", 0.0))
+
+            dx = other_x - self.current_x
+            dy = other_y - self.current_y
+
+            euclidean_dist = math.sqrt(dx * dx + dy * dy)
+
+            # 1. Emergenza assoluta:
+            # se un veicolo è fisicamente troppo vicino, mi fermo comunque.
+            # Serve per urti laterali, incroci, veicoli storti, casino fisico.
+            if euclidean_dist < 2.2:
+                self.log_navigation_event(
+                    f"vehicle emergency stop: {vehicle_id} troppo vicino, dist={euclidean_dist:.2f} m"
+                )
+                return 0.0
+
+            heading_diff = abs(
+                self.normalize_angle(other_yaw - self.current_yaw)
+            )
+
+            same_direction = heading_diff < math.radians(45)
 
             forward_dist = dx * forward_x + dy * forward_y
             side_dist = abs(-forward_y * dx + forward_x * dy)
 
+            # 2. Ignoro ciò che sta dietro,
+            # salvo il caso emergenziale già gestito sopra.
             if forward_dist <= 0.0:
                 continue
 
-            if side_dist > self.vehicle_corridor_width:
+            consider = False
+
+            # 3. Veicolo davanti nella stessa corsia / stessa direzione
+            if (
+                side_dist <= self.vehicle_corridor_width
+                and same_direction
+            ):
+                consider = True
+
+            # 4. Rischio vicino davanti anche se non stessa direzione.
+            # Utile per incroci o veicoli storti.
+            elif (
+                forward_dist < 3.0
+                and side_dist < 1.6
+            ):
+                consider = True
+
+            if not consider:
                 continue
 
             if forward_dist < min_forward_dist:
@@ -616,9 +657,7 @@ class NavigationExecutor(Node):
                 closest_vehicle = vehicle_id
 
         if min_forward_dist <= self.vehicle_stop_distance:
-            self.log_navigation_event(
-                f"vehicle proximity stop: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m"
-            )
+            #self.log_navigation_event(f"vehicle proximity stop: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m")
             return 0.0
 
         if min_forward_dist <= self.vehicle_slow_distance:
@@ -627,9 +666,7 @@ class NavigationExecutor(Node):
                 / (self.vehicle_slow_distance - self.vehicle_stop_distance)
             )
 
-            self.log_navigation_event(
-                f"vehicle proximity slow: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m"
-            )
+            #self.log_navigation_event(f"vehicle proximity slow: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m")
 
             return max(0.0, min(1.0, ratio))
 
@@ -1237,22 +1274,31 @@ class NavigationExecutor(Node):
             "y": lane_y,
         }
 
-    def apply_right_lane_offset(self, x, y, from_x, from_y, to_x, to_y):
+    def apply_right_lane_offset(
+        self,
+        x,
+        y,
+        from_x,
+        from_y,
+        to_x,
+        to_y
+    ):
         dx = to_x - from_x
         dy = to_y - from_y
 
         length = math.sqrt(dx * dx + dy * dy)
 
-        if length <= 0.000001:
+        if length < 1e-6:
             return x, y
 
-        ux = dx / length
-        uy = dy / length
+        dx /= length
+        dy /= length
 
-        right_x = uy
-        right_y = -ux
+        # NORMALE DESTRA rispetto al verso reale
+        right_x = dy
+        right_y = -dx
 
-        offset = self.lane_width * self.lane_offset_ratio
+        offset = self.lane_width * 0.5 * self.lane_offset_ratio
 
         return (
             x + right_x * offset,
@@ -1669,7 +1715,7 @@ class NavigationExecutor(Node):
             distance = 0.0
 
         ctrl = waypoint.get("_last_control", {}) if waypoint else {}
-        #return
+        return
         self.log_navigation_event(
             f"{reason} | stato={self.state.value} | "
             f"{self.describe_graph_position()} | "

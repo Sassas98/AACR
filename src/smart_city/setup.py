@@ -65,9 +65,9 @@ setup(
             'traffic_light_manager = smart_city.traffic_light_manager:main',
             'taxi_coordinator = smart_city.taxi_coordinator:main',
             'taxi_request_manager = smart_city.taxi_request_manager:main',
-            'bus_booking_generator = smart_city.bus_booking_generator:main',
             'taxi_request_generator = smart_city.taxi_request_generator:main',
             'private_car_simulator_node = smart_city.private_car_simulator_node:main',
+            'gazebo_visual_controller = smart_city.gazebo_visual_controller:main',
         ],
     },
 )

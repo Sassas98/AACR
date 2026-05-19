@@ -1,60 +1,51 @@
 {
   "paths": {
-
     "path_A": [
       { "id": "A1", "x": -39.4, "y": 39.4, "is_stop": false },
-
       { "id": "A2", "x": -20.0, "y": 39.4, "is_stop": true, "stop_id": "stop_A1" },
       { "id": "A3", "x": 0.0, "y": 39.4, "is_stop": true, "stop_id": "stop_A2" },
       { "id": "A4", "x": 20.0, "y": 39.4, "is_stop": true, "stop_id": "stop_A3" },
-
       { "id": "A5", "x": 39.4, "y": 20.0, "is_stop": true, "stop_id": "stop_A4" },
       { "id": "A6", "x": 39.4, "y": 0.0, "is_stop": true, "stop_id": "stop_A5" },
-
-      { "id": "A7", "x": 20.0, "y": 0.0, "is_stop": false },
-
-      { "id": "A8", "x": 0.0, "y": 0.0, "is_stop": true, "stop_id": "stop_A6" },
-      { "id": "A9", "x": -20.0, "y": 0.0, "is_stop": true, "stop_id": "stop_A7" },
-
-      { "id": "A10", "x": -39.4, "y": 20.0, "is_stop": true, "stop_id": "stop_A8" }
+      { "id": "A7", "x": 39.4, "y": -20.0, "is_stop": false },
+      { "id": "A8", "x": 39.4, "y": -39.4, "is_stop": false },
+      { "id": "A9", "x": 20.0, "y": -39.4, "is_stop": false },
+      { "id": "A10", "x": 0.0, "y": -39.4, "is_stop": false },
+      { "id": "A11", "x": -20.0, "y": -39.4, "is_stop": false },
+      { "id": "A12", "x": -39.4, "y": -20.0, "is_stop": false },
+      { "id": "A13", "x": -39.4, "y": 0.0, "is_stop": false },
+      { "id": "A14", "x": -39.4, "y": 20.0, "is_stop": true, "stop_id": "stop_A8" }
     ],
-
-
 
     "path_B": [
       { "id": "B1", "x": -39.4, "y": -39.4, "is_stop": false },
-
       { "id": "B2", "x": -39.4, "y": -20.0, "is_stop": true, "stop_id": "stop_B1" },
       { "id": "B3", "x": -39.4, "y": 0.0, "is_stop": true, "stop_id": "stop_B2" },
-
-      { "id": "B4", "x": -20.0, "y": 0.0, "is_stop": true, "stop_id": "stop_B3" },
-      { "id": "B5", "x": 0.0, "y": 0.0, "is_stop": true, "stop_id": "stop_B4" },
-
-      { "id": "B6", "x": 20.0, "y": -20.0, "is_stop": true, "stop_id": "stop_B5" },
-      { "id": "B7", "x": 20.0, "y": -39.4, "is_stop": true, "stop_id": "stop_B6" },
-
-      { "id": "B8", "x": 0.0, "y": -39.4, "is_stop": false },
-
-      { "id": "B9", "x": -20.0, "y": -39.4, "is_stop": true, "stop_id": "stop_B7" }
+      { "id": "B4", "x": -39.4, "y": 20.0, "is_stop": false },
+      { "id": "B5", "x": -39.4, "y": 39.4, "is_stop": false },
+      { "id": "B6", "x": -20.0, "y": 39.4, "is_stop": false },
+      { "id": "B7", "x": 0.0, "y": 39.4, "is_stop": false },
+      { "id": "B8", "x": 20.0, "y": 39.4, "is_stop": false },
+      { "id": "B9", "x": 39.4, "y": 20.0, "is_stop": false },
+      { "id": "B10", "x": 39.4, "y": 0.0, "is_stop": false },
+      { "id": "B11", "x": 39.4, "y": -20.0, "is_stop": false },
+      { "id": "B12", "x": 20.0, "y": -20.0, "is_stop": true, "stop_id": "stop_B5" },
+      { "id": "B13", "x": 20.0, "y": -39.4, "is_stop": true, "stop_id": "stop_B6" },
+      { "id": "B14", "x": -20.0, "y": -39.4, "is_stop": true, "stop_id": "stop_B7" }
     ],
-
-
 
     "path_C": [
       { "id": "C1", "x": -20.0, "y": 39.4, "is_stop": false },
-
       { "id": "C2", "x": -20.0, "y": 20.0, "is_stop": true, "stop_id": "stop_C1" },
       { "id": "C3", "x": -20.0, "y": 0.0, "is_stop": true, "stop_id": "stop_C2" },
       { "id": "C4", "x": -20.0, "y": -20.0, "is_stop": true, "stop_id": "stop_C3" },
-
-      { "id": "C5", "x": 0.0, "y": -20.0, "is_stop": true, "stop_id": "stop_C4" },
-      { "id": "C6", "x": 20.0, "y": -20.0, "is_stop": true, "stop_id": "stop_C5" },
-
-      { "id": "C7", "x": 20.0, "y": 0.0, "is_stop": true, "stop_id": "stop_C6" },
-      { "id": "C8", "x": 20.0, "y": 20.0, "is_stop": true, "stop_id": "stop_C7" },
-
-      { "id": "C9", "x": 0.0, "y": 20.0, "is_stop": true, "stop_id": "stop_C8" }
+      { "id": "C5", "x": -20.0, "y": -39.4, "is_stop": false },
+      { "id": "C6", "x": 0.0, "y": -39.4, "is_stop": false },
+      { "id": "C7", "x": 20.0, "y": -39.4, "is_stop": false },
+      { "id": "C8", "x": 20.0, "y": -20.0, "is_stop": false },
+      { "id": "C9", "x": 20.0, "y": 0.0, "is_stop": true, "stop_id": "stop_C6" },
+      { "id": "C10", "x": 20.0, "y": 20.0, "is_stop": true, "stop_id": "stop_C7" },
+      { "id": "C11", "x": 0.0, "y": 20.0, "is_stop": true, "stop_id": "stop_C8" }
     ]
-
   }
 }

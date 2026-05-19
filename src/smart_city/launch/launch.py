@@ -471,17 +471,6 @@ def generate_launch_description():
         actions=[
             Node(
                 package="smart_city",
-                executable="bus_booking_generator",
-
-                parameters=[{
-                    "bus_stops_config_file": bus_stops_file
-                }],
-
-                output="screen"
-            ),
-
-            Node(
-                package="smart_city",
                 executable="taxi_request_generator",
 
                 parameters=[{
