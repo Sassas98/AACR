@@ -1,4 +1,4 @@
 1. aggiustare logica anti-incidente
-4. aggiustare visibilità semafori
-5. aggiustare visibilità prenotazioni
-6. aggiustare multi scenari
+6. aggiustare spawn auto private
+7. inserire spawn blocchi perenni
+8. inserire spawn blocchi randomici
