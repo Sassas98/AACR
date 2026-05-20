@@ -41,18 +41,18 @@ class TrafficLightManager(Node):
         self.declare_parameter("map_config_file", "config/city_map.json")
 
         # Vecchi parametri
-        self.declare_parameter("base_phase_duration", 6.0)
-        self.declare_parameter("min_phase_duration", 3.0)
-        self.declare_parameter("max_phase_duration", 12.0)
+        self.declare_parameter("base_phase_duration", 60.0)
+        self.declare_parameter("min_phase_duration", 30.0)
+        self.declare_parameter("max_phase_duration", 120.0)
 
         # Parametri usati dal tuo launch attuale
-        self.declare_parameter("green_duration", 320.0)
-        self.declare_parameter("yellow_duration", 80.0)
-        self.declare_parameter("all_red_duration", 25.0)
-        self.declare_parameter("min_green_duration", 160.0)
-        self.declare_parameter("max_green_duration", 640.0)
+        self.declare_parameter("green_duration", 60.0)
+        self.declare_parameter("yellow_duration", 10.0)
+        self.declare_parameter("all_red_duration", 30.0)
+        self.declare_parameter("min_green_duration", 3200.0)
+        self.declare_parameter("max_green_duration", 6400.0)
 
-        self.declare_parameter("priority_request_ttl_sec", 10.0)
+        self.declare_parameter("priority_request_ttl_sec", 50.0)
 
         self.node_id = self.get_parameter("node_id").value
 
@@ -317,10 +317,44 @@ class TrafficLightManager(Node):
         ]
 
     def should_leave_green(self, phase, elapsed):
-        if elapsed < self.min_green_duration:
-            return False
+        BASE_GREEN = 60.0
+        PRIORITY_ADVANTAGE = 20.0
 
-        return True
+        # Nessuna priorità: verde fisso 60s.
+        if not self.priority_requests:
+            return elapsed >= BASE_GREEN
+
+        # Controllo se l'altro gruppo ha richieste.
+        other_phase = (
+            LightPhase.GREEN_B
+            if phase == LightPhase.GREEN_A
+            else LightPhase.GREEN_A
+        )
+
+        current_score = 0
+        other_score = 0
+
+        for request in self.priority_requests:
+            movement = {
+                "from": request["from_node_id"],
+                "to": request["to_node_id"]
+            }
+
+            priority = int(request.get("priority", 1))
+
+            if self.movement_allowed_in_green_phase(movement, phase):
+                current_score += priority
+
+            if self.movement_allowed_in_green_phase(movement, other_phase):
+                other_score += priority
+
+        # L'altro gruppo ha richieste:
+        # posso anticipare il cambio di massimo 20s.
+        if other_score > current_score:
+            return elapsed >= (BASE_GREEN - PRIORITY_ADVANTAGE)
+
+        # Altrimenti verde normale.
+        return elapsed >= BASE_GREEN
 
     def choose_green_phase(self):
         if not self.priority_requests:
