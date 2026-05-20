@@ -43,19 +43,19 @@ class NavigationExecutor(Node):
 
                 ("default_max_speed", 2.4),
                 ("linear_k", 1.6),
-                ("angular_k", 1.6),
-                ("max_angular_speed", 0.9),
+                ("angular_k", 3.6),
+                ("max_angular_speed", 1.95),
                 ("lookahead_distance", 4.0),
                 ("lane_recovery_threshold", 0.35),
 
-                ("waypoint_tolerance", 0.18),
+                ("waypoint_tolerance", 0.30),
                 ("target_tolerance", 0.45),
 
                 ("lane_width", 2.4),
                 ("lane_offset_ratio", 1.0),
 
                 ("intersection_clearance", 2.2),
-                ("traffic_light_stop_distance", 35),
+                ("traffic_light_stop_distance", 7.0),
 
                 ("obstacle_stop_distance", 3.0),
                 ("obstacle_slow_distance", 5.0),
@@ -66,14 +66,6 @@ class NavigationExecutor(Node):
                 ("path_log_enabled", True),
             ]
         )
-
-        self.last_cmd_linear = 0.0
-        self.last_cmd_angular = 0.0
-        self.last_cmd_time = self.get_clock().now()
-
-        self.max_linear_accel = 0.8      # m/s²
-        self.max_linear_decel = 1.5      # m/s²
-        self.max_angular_accel = 1.2     # rad/s²
 
         self.vehicle_id = self.get_parameter("vehicle_id").value
         self.map_config_file = self.get_parameter("map_config_file").value
@@ -92,8 +84,8 @@ class NavigationExecutor(Node):
         self.lane_recovery_threshold = float(self.get_parameter("lane_recovery_threshold").value)
         self.lookahead_distance = float(self.get_parameter("lookahead_distance").value)
 
-        self.intersection_clearance = float(self.get_parameter("intersection_clearance").value)
-        self.traffic_light_stop_distance = float(self.get_parameter("traffic_light_stop_distance").value)
+        self.intersection_clearance = max(3.0, float(self.get_parameter("intersection_clearance").value))
+        self.traffic_light_stop_distance = max(14.0, float(self.get_parameter("traffic_light_stop_distance").value))
 
         self.obstacle_stop_distance = float(self.get_parameter("obstacle_stop_distance").value)
         self.obstacle_slow_distance = float(self.get_parameter("obstacle_slow_distance").value)
@@ -205,41 +197,6 @@ class NavigationExecutor(Node):
             cancel_callback=self.cancel_callback,
             callback_group=self.callback_group
         )
-
-    def publish_limited_cmd(self, linear_speed, angular_speed):
-        now = self.get_clock().now()
-        dt = (now - self.last_cmd_time).nanoseconds / 1e9
-
-        if dt <= 0.0 or dt > 1.0:
-            dt = 0.05
-
-        max_up = self.max_linear_accel * dt
-        max_down = self.max_linear_decel * dt
-
-        delta_v = linear_speed - self.last_cmd_linear
-
-        if delta_v > max_up:
-            linear_speed = self.last_cmd_linear + max_up
-        elif delta_v < -max_down:
-            linear_speed = self.last_cmd_linear - max_down
-
-        max_w_delta = self.max_angular_accel * dt
-        delta_w = angular_speed - self.last_cmd_angular
-
-        if delta_w > max_w_delta:
-            angular_speed = self.last_cmd_angular + max_w_delta
-        elif delta_w < -max_w_delta:
-            angular_speed = self.last_cmd_angular - max_w_delta
-
-        cmd = Twist()
-        cmd.linear.x = float(linear_speed)
-        cmd.angular.z = float(angular_speed)
-
-        self.cmd_vel_pub.publish(cmd)
-
-        self.last_cmd_linear = linear_speed
-        self.last_cmd_angular = angular_speed
-        self.last_cmd_time = now
 
     # ============================================================
     # MAPPA
@@ -388,35 +345,6 @@ class NavigationExecutor(Node):
 
     def cancel_callback(self, goal_handle):
         return CancelResponse.ACCEPT
-    
-    def is_near_red_traffic_light(self):
-        if not self.has_odom:
-            return False
-
-        stop_radius = 3.0
-
-        for node_id, status in self.traffic_light_statuses.items():
-            color = status.get("color")
-
-            if color != "red":
-                continue
-
-            node = self.nodes.get(node_id)
-
-            if node is None:
-                continue
-
-            d = self.distance_xy(
-                self.current_x,
-                self.current_y,
-                float(node["x"]),
-                float(node["y"])
-            )
-
-            if d <= stop_radius:
-                return True
-
-        return False
 
     async def execute_callback(self, goal_handle):
         goal = goal_handle.request
@@ -547,16 +475,6 @@ class NavigationExecutor(Node):
                 rate.sleep()
                 continue
 
-            if self.is_near_red_traffic_light():
-                self.stop_vehicle()
-                waypoint_start_time = self.get_clock().now()
-
-                feedback = self.make_feedback(goal)
-                goal_handle.publish_feedback(feedback)
-
-                rate.sleep()
-                continue
-
             if self.must_wait_at_traffic_light(current_wp, goal, distance_to_wp):
                 self.stop_vehicle()
                 waypoint_start_time = self.get_clock().now()
@@ -676,7 +594,7 @@ class NavigationExecutor(Node):
         right_x = math.sin(self.current_yaw)
         right_y = -math.cos(self.current_yaw)
 
-        min_slow_factor = 1.0
+        min_factor = 1.0
 
         for vehicle_id, other in list(self.other_vehicles.items()):
             stamp = float(other.get("stamp", 0.0))
@@ -703,124 +621,83 @@ class NavigationExecutor(Node):
             opposite_direction = heading_diff > math.radians(150)
             crossing_direction = not same_direction and not opposite_direction
 
-            # Direzione dell'altro veicolo.
-            other_forward_x = math.cos(other_yaw)
-            other_forward_y = math.sin(other_yaw)
+            my_priority_score = self.current_x + self.current_y
+            other_priority_score = other_x + other_y
 
-            # Quanto l'altro sta andando verso di noi.
-            other_to_me_x = self.current_x - other_x
-            other_to_me_y = self.current_y - other_y
-            other_forward_to_me = (
-                other_to_me_x * other_forward_x +
-                other_to_me_y * other_forward_y
-            )
-
-            # Quanto noi stiamo andando verso l'altro.
-            self_forward_to_other = forward_dist
-
-            # Stima rozza di convergenza.
-            both_approaching = (
-                self_forward_to_other > -1.0
-                and other_forward_to_me > -1.0
-            )
+            # Chi ha score più alto cede.
+            i_must_yield = my_priority_score > other_priority_score
 
             # ============================================================
             # 1. EMERGENZA ASSOLUTA
             # ============================================================
-            # Se è troppo vicino, stop sempre. Non importa il verso.
             if euclidean_dist < 2.4:
-                self.log_navigation_event(
-                    f"vehicle emergency stop: {vehicle_id} vicino, dist={euclidean_dist:.2f}"
-                )
-                return 0.0
+                if i_must_yield:
+                    return 0.08
+                return 0.90
 
             # ============================================================
-            # 2. VEICOLO DAVANTI FERMO / LENTO / STESSA DIREZIONE
+            # 2. STESSA DIREZIONE: comportamento da coda
             # ============================================================
             if same_direction:
-                # Davanti nella stessa corsia: comportamento da coda.
-                if forward_dist > 0.0 and abs_side_dist < 1.2:
-                    if forward_dist < 3.0:
-                        return 0.0
+                if forward_dist > 0.0 and abs_side_dist < 1.4:
+                    if forward_dist < 2.8:
+                        return 0.08
 
                     if forward_dist < self.vehicle_slow_distance:
                         factor = (
-                            (forward_dist - 3.0)
-                            / max(0.001, self.vehicle_slow_distance - 3.0)
+                            (forward_dist - 2.8)
+                            / max(0.001, self.vehicle_slow_distance - 2.8)
                         )
-                        factor = max(0.15, min(1.0, factor))
-                        min_slow_factor = min(min_slow_factor, factor)
-
-                # Stessa direzione ma molto vicino lateralmente: prudenza.
-                elif euclidean_dist < 3.2:
-                    return 0.0
+                        factor = max(0.18, min(1.0, factor))
+                        min_factor = min(min_factor, factor)
 
                 continue
 
             # ============================================================
-            # 3. DIREZIONI OPPOSTE
+            # 3. DIREZIONI OPPOSTE: uno cede, uno passa
             # ============================================================
             if opposite_direction:
-                # Se è quasi di fronte e vicino alla mia traiettoria,
-                # NON fermo subito: lascio lavorare la avoidance.
-                # Però se ormai è troppo vicino, stop di emergenza.
-                if forward_dist > -0.5 and forward_dist < 2.8 and abs_side_dist < 1.7:
-                    return 0.0
+                frontal_conflict = (
+                    -0.5 < forward_dist < 8.5
+                    and abs_side_dist < 2.4
+                )
 
-                # Se è frontale ma ancora a distanza gestibile,
-                # rallento poco: avoidance può lavorare.
-                if 2.8 <= forward_dist < 8.0 and abs_side_dist < 2.0:
-                    min_slow_factor = min(min_slow_factor, 0.75)
+                if frontal_conflict:
+                    if i_must_yield:
+                        min_factor = min(min_factor, 0.10)
+                    else:
+                        min_factor = min(min_factor, 0.90)
 
                 continue
 
             # ============================================================
-            # 4. DIREZIONI INCROCIATE / PERPENDICOLARI
+            # 4. INCROCIO / DIREZIONE PERPENDICOLARE
             # ============================================================
             if crossing_direction:
-                # Questo è il caso critico degli incroci:
-                # non devi schivare, devi fermarti.
-
-                # Altro veicolo dentro/davanti all'incrocio vicino alla mia zona.
-                intersection_conflict = (
-                    -1.5 < forward_dist < 7.0
-                    and abs_side_dist < 4.2
-                    and euclidean_dist < 7.5
+                crossing_conflict = (
+                    -1.5 < forward_dist < 7.5
+                    and abs_side_dist < 4.8
+                    and euclidean_dist < 8.5
                 )
 
-                # L'altro sta attraversando davanti a me.
-                crossing_in_front = (
-                    0.0 < forward_dist < 6.5
-                    and abs_side_dist < 4.5
-                )
-
-                # Siamo geometricamente convergenti.
-                convergence_conflict = (
-                    both_approaching
-                    and euclidean_dist < 8.0
-                    and -2.0 < forward_dist < 7.0
-                    and abs_side_dist < 4.5
-                )
-
-                if intersection_conflict or crossing_in_front or convergence_conflict:
-                    self.log_navigation_event(
-                        f"vehicle crossing stop: {vehicle_id} "
-                        f"dist={euclidean_dist:.2f}, "
-                        f"forward={forward_dist:.2f}, "
-                        f"side={side_dist:.2f}, "
-                        f"heading_diff={math.degrees(heading_diff):.1f}"
-                    )
-                    return 0.0
+                if crossing_conflict:
+                    if i_must_yield:
+                        min_factor = min(min_factor, 0.08)
+                    else:
+                        min_factor = min(min_factor, 0.85)
 
                 continue
 
             # ============================================================
-            # 5. CASO NON CLASSIFICATO: PRUDENZA
+            # 5. FALLBACK PRUDENTE
             # ============================================================
             if euclidean_dist < 4.0:
-                return 0.0
+                if i_must_yield:
+                    min_factor = min(min_factor, 0.12)
+                else:
+                    min_factor = min(min_factor, 0.85)
 
-        return min_slow_factor
+        return min_factor
 
     def get_obstacle_speed_factor(self):
         d = self.obstacle_min_distance
@@ -959,21 +836,39 @@ class NavigationExecutor(Node):
     # ============================================================
 
     def must_wait_at_traffic_light(self, current_wp, goal, distance_to_wp):
+        """
+        Nuova logica semaforo ad assi.
+
+        Il traffic_light_manager pubblica signal_states per ramo:
+        - from_node_id verde: puoi entrare nell'incrocio da quel ramo;
+        - from_node_id giallo/rosso: devi fermarti.
+
+        Qui non guardo più il colore globale dell'incrocio.
+        Guardo solo il ramo da cui sto arrivando.
+        """
+        if current_wp.get("kind") != "approach_intersection":
+            return False
+
         intersection_node_id = current_wp.get("node_id")
+        from_node_id = current_wp.get("from_node_id")
+        to_node_id = current_wp.get("to_node_id")
 
         if not intersection_node_id:
             return False
 
-        if intersection_node_id not in self.traffic_light_statuses:
-            return False
-
-        from_node_id, to_node_id = self.get_movement_for_intersection(intersection_node_id)
+        if not from_node_id:
+            from_node_id, to_node_id = self.get_movement_for_intersection(intersection_node_id)
 
         if not from_node_id:
             return False
 
-        # Se sono ancora lontano, chiedo solo priorità.
-        if distance_to_wp <= self.traffic_light_stop_distance * 4.0:
+        # Se il nodo non ha status, non blocco la simulazione.
+        # Vuol dire che quel nodo non è semaforizzato o il manager non è partito.
+        if intersection_node_id not in self.traffic_light_statuses:
+            return False
+
+        # Chiedo priorità con largo anticipo.
+        if distance_to_wp <= self.traffic_light_stop_distance * 5.0:
             self.maybe_publish_priority_request(
                 from_node_id,
                 to_node_id,
@@ -981,29 +876,33 @@ class NavigationExecutor(Node):
                 goal.mission_id
             )
 
-        # Zona di stop più ampia.
+        # Mi fermo prima dell'incrocio, non al centro.
         if distance_to_wp > self.traffic_light_stop_distance:
             return False
 
-        allowed = self.is_movement_allowed(
+        color = self.get_signal_color_for_branch(
+            intersection_node_id,
             from_node_id,
-            to_node_id,
-            intersection_node_id
+            to_node_id
         )
 
-        if allowed:
+        if color == "green":
             if self.state == ExecutorState.WAITING_TRAFFIC_LIGHT:
                 self.state = ExecutorState.NAVIGATING
-            return False
+                self.log_navigation_snapshot(
+                    f"semaforo {intersection_node_id} verde per ramo {from_node_id}: riparto",
+                    current_wp,
+                    distance_to_wp,
+                    force=True
+                )
 
-        self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
-        return True
+            return False
 
         if self.state != ExecutorState.WAITING_TRAFFIC_LIGHT:
             self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
             self.log_navigation_snapshot(
                 f"fermo al semaforo {intersection_node_id}: "
-                f"movimento {from_node_id}->{intersection_node_id}->{to_node_id} non consentito",
+                f"ramo {from_node_id} color={color}",
                 current_wp,
                 distance_to_wp,
                 force=True
@@ -1038,19 +937,33 @@ class NavigationExecutor(Node):
             f"movimento {from_node_id}->{intersection_node_id}->{to_node_id}"
         )
 
-    def is_movement_allowed(self, from_node_id, to_node_id, intersection_node_id):
+    def get_signal_color_for_branch(self, intersection_node_id, from_node_id, to_node_id=None):
         status = self.traffic_light_statuses.get(intersection_node_id)
 
         if status is None:
-            return True
+            return "green"
 
+        # Nuova logica: stato per ramo di ingresso.
+        for signal in status.get("signal_states", []):
+            if signal.get("from_node_id") == from_node_id:
+                return str(signal.get("color", "red")).lower()
+
+        # Fallback: vecchia logica a movimenti consentiti.
         allowed = status.get("allowed_movements", [])
 
         for movement in allowed:
-            if movement.get("from") == from_node_id and movement.get("to") == to_node_id:
-                return True
+            if movement.get("from") == from_node_id:
+                if to_node_id is None or movement.get("to") == to_node_id:
+                    return "green"
 
-        return False
+        return "red"
+
+    def is_movement_allowed(self, from_node_id, to_node_id, intersection_node_id):
+        return self.get_signal_color_for_branch(
+            intersection_node_id,
+            from_node_id,
+            to_node_id
+        ) == "green"
 
     def get_movement_for_intersection(self, intersection_node_id):
         if not self.node_path:
@@ -1263,7 +1176,16 @@ class NavigationExecutor(Node):
         target_edge = target_projection["edge"]
 
         # ------------------------------------------------------------
-        # 4. Costruzione waypoint
+        # 4. Costruzione waypoint "barata" vicino ai bordi.
+        #
+        # Prima avevamo solo approach_intersection.
+        # Così il veicolo tagliava l'incrocio verso il centro.
+        # Ora per ogni incrocio creo:
+        #   - approach: punto PRIMA dell'incrocio, nella corsia destra;
+        #   - corner: punto laterale interno, non al centro;
+        #   - exit: punto DOPO l'incrocio, nella corsia destra.
+        #
+        # In pratica lo costringo a seguire un corridoio vicino al bordo.
         # ------------------------------------------------------------
         waypoints = []
 
@@ -1272,6 +1194,8 @@ class NavigationExecutor(Node):
             "y": start_projection["y"],
             "edge_id": start_edge["id"],
             "node_id": first_destination,
+            "from_node_id": start_edge["from"] if first_destination == start_edge["to"] else start_edge["to"],
+            "to_node_id": first_destination,
             "kind": "start_lane_projection",
             "speed_limit": start_edge["speed_limit"],
         })
@@ -1279,8 +1203,13 @@ class NavigationExecutor(Node):
         for i in range(len(best_node_path) - 1):
             current_node_id = best_node_path[i]
             next_node_id = best_node_path[i + 1]
+            following_node_id = (
+                best_node_path[i + 2]
+                if i + 2 < len(best_node_path)
+                else None
+            )
 
-            edge = self.get_edge_between(current_node_id, next_node_id)
+            incoming_edge = self.get_edge_between(current_node_id, next_node_id)
 
             approach = self.node_to_right_lane_point(
                 node_id=next_node_id,
@@ -1291,17 +1220,60 @@ class NavigationExecutor(Node):
             waypoints.append({
                 "x": approach["x"],
                 "y": approach["y"],
-                "edge_id": edge["id"],
+                "edge_id": incoming_edge["id"],
                 "node_id": next_node_id,
+                "from_node_id": current_node_id,
+                "to_node_id": following_node_id,
                 "kind": "approach_intersection",
-                "speed_limit": edge["speed_limit"],
+                "speed_limit": incoming_edge["speed_limit"],
             })
+
+            # Se devo proseguire oltre l'incrocio, aggiungo corner + exit.
+            # Se invece il target è proprio su questo nodo/edge finale, ci pensa target_projection.
+            if following_node_id is not None:
+                outgoing_edge = self.get_edge_between(next_node_id, following_node_id)
+
+                exit_point = self.node_to_right_lane_point(
+                    node_id=next_node_id,
+                    other_node_id=following_node_id,
+                    mode="exit"
+                )
+
+                corner = self.compute_intersection_corner_point(
+                    intersection_node_id=next_node_id,
+                    approach_point=approach,
+                    exit_point=exit_point
+                )
+
+                waypoints.append({
+                    "x": corner["x"],
+                    "y": corner["y"],
+                    "edge_id": incoming_edge["id"],
+                    "node_id": next_node_id,
+                    "from_node_id": current_node_id,
+                    "to_node_id": following_node_id,
+                    "kind": "intersection_corner",
+                    "speed_limit": min(incoming_edge["speed_limit"], outgoing_edge["speed_limit"], 0.8),
+                })
+
+                waypoints.append({
+                    "x": exit_point["x"],
+                    "y": exit_point["y"],
+                    "edge_id": outgoing_edge["id"],
+                    "node_id": following_node_id,
+                    "from_node_id": next_node_id,
+                    "to_node_id": following_node_id,
+                    "kind": "exit_intersection",
+                    "speed_limit": outgoing_edge["speed_limit"],
+                })
 
         waypoints.append({
             "x": target_projection["x"],
             "y": target_projection["y"],
             "edge_id": target_edge["id"],
             "node_id": final_destination,
+            "from_node_id": target_edge["from"] if final_destination == target_edge["to"] else target_edge["to"],
+            "to_node_id": final_destination,
             "kind": "target_lane_projection",
             "speed_limit": target_edge["speed_limit"],
         })
@@ -1382,6 +1354,40 @@ class NavigationExecutor(Node):
             "destination_node_id": destination_node_id,
         }
 
+    def compute_intersection_corner_point(self, intersection_node_id, approach_point, exit_point):
+        """
+        Punto finto dentro l'incrocio, ma spostato verso il bordo.
+
+        Non passo dal centro del nodo. Prendo la media tra approach ed exit,
+        poi la spingo ancora un po' lontano dal centro dell'incrocio.
+        Questo è intenzionalmente "barato": serve a evitare che i veicoli
+        taglino la strada al centro.
+        """
+        node = self.nodes[intersection_node_id]
+        cx = float(node["x"])
+        cy = float(node["y"])
+
+        mx = (approach_point["x"] + exit_point["x"]) * 0.5
+        my = (approach_point["y"] + exit_point["y"]) * 0.5
+
+        vx = mx - cx
+        vy = my - cy
+        length = math.sqrt(vx * vx + vy * vy)
+
+        if length < 0.000001:
+            return {"x": mx, "y": my}
+
+        vx /= length
+        vy /= length
+
+        # Più alto = più vicino a marciapiede/bordo e meno centro strada.
+        push = self.lane_width * 0.45
+
+        return {
+            "x": mx + vx * push,
+            "y": my + vy * push,
+        }
+
     def node_to_right_lane_point(self, node_id, other_node_id, mode):
         node = self.nodes[node_id]
         other = self.nodes[other_node_id]
@@ -1457,17 +1463,23 @@ class NavigationExecutor(Node):
         dx /= length
         dy /= length
 
-        # NORMALE DESTRA rispetto al verso reale
+        # NORMALE DESTRA rispetto al verso reale.
         right_x = dy
         right_y = -dx
 
-        offset = self.lane_width * 0.5 * self.lane_offset_ratio
+        # BARA: anche se dal launch arriva lane_offset_ratio troppo basso,
+        # lo forzo vicino al bordo destro della carreggiata.
+        # Con lane_width=2.4:
+        #   1.0  => 1.20m dal centro strada
+        #   1.45 => 1.74m dal centro strada, molto più vicino al bordo.
+        forced_edge_ratio = max(float(self.lane_offset_ratio), 1.45)
+        offset = self.lane_width * 0.5 * forced_edge_ratio
 
         return (
             x + right_x * offset,
             y + right_y * offset
         )
-    
+
     def get_vehicle_avoidance_target(self):
         """
         Decide cosa fare rispetto agli altri veicoli.
@@ -1520,7 +1532,7 @@ class NavigationExecutor(Node):
             heading_diff = abs(self.normalize_angle(other_yaw - self.current_yaw))
 
             same_direction = heading_diff < math.radians(45)
-            opposite_direction = heading_diff > math.radians(165)
+            opposite_direction = heading_diff > math.radians(160)
             crossing_direction = not same_direction and not opposite_direction
 
             other_forward_x = math.cos(other_yaw)
@@ -1610,8 +1622,8 @@ class NavigationExecutor(Node):
 
         # Schivata dolce: tanto avanti, poco a destra.
         # Così non curva come un pazzo e non va sui semafori/marciapiedi.
-        evade_forward = 3.2
-        evade_right = 1.0
+        evade_forward = 5.0
+        evade_right = min(self.lane_width * 0.25, 0.60)
 
         return {
             "type": "AVOID_RIGHT",
@@ -1625,13 +1637,14 @@ class NavigationExecutor(Node):
         """
         Target usato dal controller.
 
-        Regola:
-        - se sono fuori corsia, punto alla corsia più vicina coerente con l'edge del waypoint;
-        - se sono già in corsia, punto a un lookahead sulla corsia verso il waypoint;
-        - così il bus non taglia più in diagonale tra waypoint lontani.
+        Versione "bordo forzato":
+        - ogni proiezione usa sempre la corsia destra forzata vicino al bordo;
+        - i waypoint di incrocio includono approach/corner/exit;
+        - non punto quasi mai il centro strada.
         """
         preferred_edge_id = waypoint.get("edge_id")
         destination_node_id = waypoint.get("node_id")
+
         avoidance = self.get_vehicle_avoidance_target()
 
         if avoidance is not None:
@@ -1672,9 +1685,28 @@ class NavigationExecutor(Node):
             waypoint["y"]
         )
 
-        # SE SONO VICINO AL WAYPOINT:
-        # smetto di fare lane recovery/lookahead
-        # e punto direttamente il waypoint
+        # I waypoint artificiali di incrocio vanno inseguiti direttamente:
+        # sono già stati costruiti vicino al bordo.
+        if waypoint.get("kind") in ("intersection_corner", "exit_intersection"):
+            return {
+                "x": waypoint["x"],
+                "y": waypoint["y"],
+                "mode_prefix": "EDGE_INTERSECTION",
+                "lane_error": lane_projection["distance"],
+                "edge_id": edge["id"],
+            }
+
+        # Se sono molto fuori dal corridoio bordo, prima rientro sul bordo.
+        if lane_projection["distance"] > self.lane_recovery_threshold:
+            return {
+                "x": lane_projection["x"],
+                "y": lane_projection["y"],
+                "mode_prefix": "EDGE_RECOVERY",
+                "lane_error": lane_projection["distance"],
+                "edge_id": edge["id"],
+            }
+
+        # Se sono vicino al waypoint, lo punto direttamente.
         if dist_current_to_wp <= max(
             self.lookahead_distance,
             self.waypoint_tolerance * 4.0
@@ -1686,19 +1718,6 @@ class NavigationExecutor(Node):
                 "lane_error": lane_projection["distance"],
                 "edge_id": edge["id"],
             }
-
-        # SOLO SE SONO LONTANO E FUORI CORSIA:
-        # faccio lane recovery
-        if lane_projection["distance"] > self.lane_recovery_threshold:
-            return {
-                "x": lane_projection["x"],
-                "y": lane_projection["y"],
-                "mode_prefix": "LANE_RECOVERY",
-                "lane_error": lane_projection["distance"],
-                "edge_id": edge["id"],
-            }
-
-        # altrimenti lookahead normale...
 
         lookahead = self.compute_lane_lookahead_point(
             edge,
@@ -1714,22 +1733,6 @@ class NavigationExecutor(Node):
             waypoint["y"]
         )
 
-        dist_current_to_wp = self.distance_xy(
-            self.current_x,
-            self.current_y,
-            waypoint["x"],
-            waypoint["y"]
-        )
-
-        if dist_current_to_wp <= max(self.lookahead_distance, self.waypoint_tolerance * 2.0):
-            return {
-                "x": waypoint["x"],
-                "y": waypoint["y"],
-                "mode_prefix": "WAYPOINT_FINAL_APPROACH",
-                "lane_error": lane_projection["distance"],
-                "edge_id": edge["id"],
-            }
-
         if dist_lookahead_to_wp > dist_current_to_wp:
             return {
                 "x": waypoint["x"],
@@ -1742,7 +1745,7 @@ class NavigationExecutor(Node):
         return {
             "x": lookahead["x"],
             "y": lookahead["y"],
-            "mode_prefix": "LANE_FOLLOW",
+            "mode_prefix": "EDGE_LANE_FOLLOW",
             "lane_error": lane_projection["distance"],
             "edge_id": edge["id"],
         }
@@ -1890,37 +1893,41 @@ class NavigationExecutor(Node):
 
         abs_error = abs(angle_error)
 
-        if abs_error > 0.75:
-            linear_speed = 0
+        if abs_error > 0.85:
+            linear_speed = 0.0
             motion_mode = "TURN_IN_PLACE"
         elif abs_error > 0.55:
-            linear_speed = 0.03
-            motion_mode = "SLOW_SLOW_SLOW_TURN"
+            linear_speed = min(max_speed, 0.18)
+            motion_mode = "VERY_SLOW_TURN"
         elif abs_error > 0.35:
-            linear_speed = 0.08
-            motion_mode = "SLOW_SLOW_TURN"
-        elif abs_error > 0.15:
-            linear_speed = min(max_speed, self.linear_k * distance, 0.25)
+            linear_speed = min(max_speed, 0.35)
             motion_mode = "SLOW_TURN"
+        elif abs_error > 0.15:
+            linear_speed = min(max_speed, self.linear_k * distance, 0.65)
+            motion_mode = "SOFT_TURN"
         else:
             linear_speed = min(max_speed, self.linear_k * distance)
             motion_mode = "FORWARD"
 
         if distance < 0.8:
-            linear_speed = min(linear_speed, 0.35)
+            linear_speed = min(linear_speed, 0.45)
 
         if distance < 0.4:
-            linear_speed = min(linear_speed, 0.20)
+            linear_speed = min(linear_speed, 0.25)
 
         linear_speed *= obstacle_factor
 
         if follow_target["mode_prefix"]:
             motion_mode = f'{follow_target["mode_prefix"]}_{motion_mode}'
-        
+
         if follow_target["mode_prefix"] == "VEHICLE_AVOIDANCE_RIGHT":
             linear_speed = max(linear_speed, min(max_speed, 0.65))
 
-        self.publish_limited_cmd(linear_speed, angular_speed)
+        cmd = Twist()
+        cmd.linear.x = float(linear_speed)
+        cmd.angular.z = float(angular_speed)
+
+        self.cmd_vel_pub.publish(cmd)
 
         waypoint["_last_control"] = {
             "target_x": target_x,
@@ -1938,7 +1945,7 @@ class NavigationExecutor(Node):
         }
 
     def stop_vehicle(self):
-        self.publish_limited_cmd(0.0, 0.0)
+        self.cmd_vel_pub.publish(Twist())
 
     # ============================================================
     # LOGGING
