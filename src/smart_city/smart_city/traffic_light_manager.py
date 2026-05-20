@@ -320,17 +320,6 @@ class TrafficLightManager(Node):
         if elapsed < self.min_green_duration:
             return False
 
-        if elapsed >= self.max_green_duration:
-            return True
-
-        desired = self.choose_green_phase()
-
-        if desired != phase and elapsed >= self.min_green_duration:
-            return True
-
-        if elapsed >= self.green_duration:
-            return True
-
         return False
 
     def choose_green_phase(self):

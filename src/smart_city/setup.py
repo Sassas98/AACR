@@ -68,6 +68,7 @@ setup(
             'taxi_request_generator = smart_city.taxi_request_generator:main',
             'private_car_simulator_node = smart_city.private_car_simulator_node:main',
             'gazebo_visual_controller = smart_city.gazebo_visual_controller:main',
+            "simulation_report_recorder = smart_city.simulation_report_recorder:main",
         ],
     },
 )
