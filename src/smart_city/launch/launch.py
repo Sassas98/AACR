@@ -483,6 +483,23 @@ def generate_launch_description():
         ]
     )
 
+    gazebo_visual_controller = TimerAction(
+        period=3.5,
+        actions=[
+            Node(
+                package="smart_city",
+                executable="gazebo_visual_controller",
+
+                parameters=[{
+                    "world_name": "smart_city_world",
+                    "city_map_file": city_map_file
+                }],
+
+                output="screen"
+            )
+        ]
+    )
+
     private_car_controller = TimerAction(
         period=6.0,
         actions=[
@@ -519,7 +536,7 @@ def generate_launch_description():
 
         gazebo,
         bridge,
-
+        gazebo_visual_controller,
         simulation_event_nodes
     ]
 

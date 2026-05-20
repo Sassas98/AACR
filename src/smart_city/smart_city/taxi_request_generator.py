@@ -23,8 +23,8 @@ class TaxiRequestGenerator(Node):
 
         gen = self.config["request_generation"]
 
-        self.min_interval = float(gen.get("min_interval_sec", 6.0))
-        self.max_interval = float(gen.get("max_interval_sec", 18.0))
+        self.min_interval = float(gen.get("min_interval_sec", 35.0))
+        self.max_interval = float(gen.get("max_interval_sec", 90.0))
 
         self.pickup_points = self.config["pickup_points"]
         self.dropoff_points = self.config["dropoff_points"]

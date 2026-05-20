@@ -52,7 +52,7 @@ class NavigationExecutor(Node):
                 ("target_tolerance", 0.45),
 
                 ("lane_width", 2.4),
-                ("lane_offset_ratio", 2.0),
+                ("lane_offset_ratio", 1.0),
 
                 ("intersection_clearance", 2.2),
                 ("traffic_light_stop_distance", 1.5),
@@ -66,6 +66,14 @@ class NavigationExecutor(Node):
                 ("path_log_enabled", True),
             ]
         )
+
+        self.last_cmd_linear = 0.0
+        self.last_cmd_angular = 0.0
+        self.last_cmd_time = self.get_clock().now()
+
+        self.max_linear_accel = 0.8      # m/s²
+        self.max_linear_decel = 1.5      # m/s²
+        self.max_angular_accel = 1.2     # rad/s²
 
         self.vehicle_id = self.get_parameter("vehicle_id").value
         self.map_config_file = self.get_parameter("map_config_file").value
@@ -198,6 +206,41 @@ class NavigationExecutor(Node):
             callback_group=self.callback_group
         )
 
+    def publish_limited_cmd(self, linear_speed, angular_speed):
+        now = self.get_clock().now()
+        dt = (now - self.last_cmd_time).nanoseconds / 1e9
+
+        if dt <= 0.0 or dt > 1.0:
+            dt = 0.05
+
+        max_up = self.max_linear_accel * dt
+        max_down = self.max_linear_decel * dt
+
+        delta_v = linear_speed - self.last_cmd_linear
+
+        if delta_v > max_up:
+            linear_speed = self.last_cmd_linear + max_up
+        elif delta_v < -max_down:
+            linear_speed = self.last_cmd_linear - max_down
+
+        max_w_delta = self.max_angular_accel * dt
+        delta_w = angular_speed - self.last_cmd_angular
+
+        if delta_w > max_w_delta:
+            angular_speed = self.last_cmd_angular + max_w_delta
+        elif delta_w < -max_w_delta:
+            angular_speed = self.last_cmd_angular - max_w_delta
+
+        cmd = Twist()
+        cmd.linear.x = float(linear_speed)
+        cmd.angular.z = float(angular_speed)
+
+        self.cmd_vel_pub.publish(cmd)
+
+        self.last_cmd_linear = linear_speed
+        self.last_cmd_angular = angular_speed
+        self.last_cmd_time = now
+
     # ============================================================
     # MAPPA
     # ============================================================
@@ -257,6 +300,7 @@ class NavigationExecutor(Node):
     # ============================================================
     # SENSORI
     # ============================================================
+
 
     def on_world_pose(self, msg):
         p = msg.pose.position
@@ -590,13 +634,14 @@ class NavigationExecutor(Node):
         forward_x = math.cos(self.current_yaw)
         forward_y = math.sin(self.current_yaw)
 
-        min_forward_dist = float("inf")
-        closest_vehicle = None
+        right_x = math.sin(self.current_yaw)
+        right_y = -math.cos(self.current_yaw)
+
+        min_slow_factor = 1.0
 
         for vehicle_id, other in list(self.other_vehicles.items()):
             stamp = float(other.get("stamp", 0.0))
 
-            # Ignoro stati vecchi
             if now - stamp > 1.0:
                 continue
 
@@ -609,68 +654,134 @@ class NavigationExecutor(Node):
 
             euclidean_dist = math.sqrt(dx * dx + dy * dy)
 
-            # 1. Emergenza assoluta:
-            # se un veicolo è fisicamente troppo vicino, mi fermo comunque.
-            # Serve per urti laterali, incroci, veicoli storti, casino fisico.
-            if euclidean_dist < 2.2:
+            forward_dist = dx * forward_x + dy * forward_y
+            side_dist = dx * right_x + dy * right_y
+            abs_side_dist = abs(side_dist)
+
+            heading_diff = abs(self.normalize_angle(other_yaw - self.current_yaw))
+
+            same_direction = heading_diff < math.radians(45)
+            opposite_direction = heading_diff > math.radians(150)
+            crossing_direction = not same_direction and not opposite_direction
+
+            # Direzione dell'altro veicolo.
+            other_forward_x = math.cos(other_yaw)
+            other_forward_y = math.sin(other_yaw)
+
+            # Quanto l'altro sta andando verso di noi.
+            other_to_me_x = self.current_x - other_x
+            other_to_me_y = self.current_y - other_y
+            other_forward_to_me = (
+                other_to_me_x * other_forward_x +
+                other_to_me_y * other_forward_y
+            )
+
+            # Quanto noi stiamo andando verso l'altro.
+            self_forward_to_other = forward_dist
+
+            # Stima rozza di convergenza.
+            both_approaching = (
+                self_forward_to_other > -1.0
+                and other_forward_to_me > -1.0
+            )
+
+            # ============================================================
+            # 1. EMERGENZA ASSOLUTA
+            # ============================================================
+            # Se è troppo vicino, stop sempre. Non importa il verso.
+            if euclidean_dist < 2.4:
                 self.log_navigation_event(
-                    f"vehicle emergency stop: {vehicle_id} troppo vicino, dist={euclidean_dist:.2f} m"
+                    f"vehicle emergency stop: {vehicle_id} vicino, dist={euclidean_dist:.2f}"
                 )
                 return 0.0
 
-            heading_diff = abs(
-                self.normalize_angle(other_yaw - self.current_yaw)
-            )
+            # ============================================================
+            # 2. VEICOLO DAVANTI FERMO / LENTO / STESSA DIREZIONE
+            # ============================================================
+            if same_direction:
+                # Davanti nella stessa corsia: comportamento da coda.
+                if forward_dist > 0.0 and abs_side_dist < 1.2:
+                    if forward_dist < 3.0:
+                        return 0.0
 
-            same_direction = heading_diff < math.radians(45)
+                    if forward_dist < self.vehicle_slow_distance:
+                        factor = (
+                            (forward_dist - 3.0)
+                            / max(0.001, self.vehicle_slow_distance - 3.0)
+                        )
+                        factor = max(0.15, min(1.0, factor))
+                        min_slow_factor = min(min_slow_factor, factor)
 
-            forward_dist = dx * forward_x + dy * forward_y
-            side_dist = abs(-forward_y * dx + forward_x * dy)
+                # Stessa direzione ma molto vicino lateralmente: prudenza.
+                elif euclidean_dist < 3.2:
+                    return 0.0
 
-            # 2. Ignoro ciò che sta dietro,
-            # salvo il caso emergenziale già gestito sopra.
-            if forward_dist <= 0.0:
                 continue
 
-            consider = False
+            # ============================================================
+            # 3. DIREZIONI OPPOSTE
+            # ============================================================
+            if opposite_direction:
+                # Se è quasi di fronte e vicino alla mia traiettoria,
+                # NON fermo subito: lascio lavorare la avoidance.
+                # Però se ormai è troppo vicino, stop di emergenza.
+                if forward_dist > -0.5 and forward_dist < 2.8 and abs_side_dist < 1.7:
+                    return 0.0
 
-            # 3. Veicolo davanti nella stessa corsia / stessa direzione
-            if (
-                side_dist <= self.vehicle_corridor_width
-                and same_direction
-            ):
-                consider = True
+                # Se è frontale ma ancora a distanza gestibile,
+                # rallento poco: avoidance può lavorare.
+                if 2.8 <= forward_dist < 8.0 and abs_side_dist < 2.0:
+                    min_slow_factor = min(min_slow_factor, 0.75)
 
-            # 4. Rischio vicino davanti anche se non stessa direzione.
-            # Utile per incroci o veicoli storti.
-            elif (
-                forward_dist < 3.0
-                and side_dist < 1.6
-            ):
-                consider = True
-
-            if not consider:
                 continue
 
-            if forward_dist < min_forward_dist:
-                min_forward_dist = forward_dist
-                closest_vehicle = vehicle_id
+            # ============================================================
+            # 4. DIREZIONI INCROCIATE / PERPENDICOLARI
+            # ============================================================
+            if crossing_direction:
+                # Questo è il caso critico degli incroci:
+                # non devi schivare, devi fermarti.
 
-        if min_forward_dist <= self.vehicle_stop_distance:
-            #self.log_navigation_event(f"vehicle proximity stop: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m")
-            return 0.0
+                # Altro veicolo dentro/davanti all'incrocio vicino alla mia zona.
+                intersection_conflict = (
+                    -1.5 < forward_dist < 7.0
+                    and abs_side_dist < 4.2
+                    and euclidean_dist < 7.5
+                )
 
-        if min_forward_dist <= self.vehicle_slow_distance:
-            ratio = (
-                (min_forward_dist - self.vehicle_stop_distance)
-                / (self.vehicle_slow_distance - self.vehicle_stop_distance)
-            )
+                # L'altro sta attraversando davanti a me.
+                crossing_in_front = (
+                    0.0 < forward_dist < 6.5
+                    and abs_side_dist < 4.5
+                )
 
-            #self.log_navigation_event(f"vehicle proximity slow: davanti ho {closest_vehicle} a {min_forward_dist:.2f} m")
+                # Siamo geometricamente convergenti.
+                convergence_conflict = (
+                    both_approaching
+                    and euclidean_dist < 8.0
+                    and -2.0 < forward_dist < 7.0
+                    and abs_side_dist < 4.5
+                )
 
-            return max(0.0, min(1.0, ratio))
+                if intersection_conflict or crossing_in_front or convergence_conflict:
+                    self.log_navigation_event(
+                        f"vehicle crossing stop: {vehicle_id} "
+                        f"dist={euclidean_dist:.2f}, "
+                        f"forward={forward_dist:.2f}, "
+                        f"side={side_dist:.2f}, "
+                        f"heading_diff={math.degrees(heading_diff):.1f}"
+                    )
+                    return 0.0
 
-        return 1.0
+                continue
+
+            # ============================================================
+            # 5. CASO NON CLASSIFICATO: PRUDENZA
+            # ============================================================
+            if euclidean_dist < 4.0:
+                return 0.0
+
+        return min_slow_factor
 
     def get_obstacle_speed_factor(self):
         d = self.obstacle_min_distance
@@ -685,7 +796,18 @@ class NavigationExecutor(Node):
             )
             lidar_factor = max(0.0, min(1.0, lidar_factor))
 
-        vehicle_factor = self.get_vehicle_proximity_factor()
+        avoidance = self.get_vehicle_avoidance_target()
+
+        # Se sto facendo avoidance o stop logico da crossing,
+        # non lasciare che get_vehicle_proximity_factor() trasformi tutto
+        # in OBSTACLE_STOP prima che move_towards_waypoint() gestisca il caso.
+        if avoidance is not None:
+            if avoidance.get("type") == "STOP":
+                vehicle_factor = 1.0
+            else:
+                vehicle_factor = 0.80
+        else:
+            vehicle_factor = self.get_vehicle_proximity_factor()
 
         return min(lidar_factor, vehicle_factor)
 
@@ -1108,7 +1230,7 @@ class NavigationExecutor(Node):
             "x": start_projection["x"],
             "y": start_projection["y"],
             "edge_id": start_edge["id"],
-            "node_id": None,
+            "node_id": first_destination,
             "kind": "start_lane_projection",
             "speed_limit": start_edge["speed_limit"],
         })
@@ -1138,7 +1260,7 @@ class NavigationExecutor(Node):
             "x": target_projection["x"],
             "y": target_projection["y"],
             "edge_id": target_edge["id"],
-            "node_id": None,
+            "node_id": final_destination,
             "kind": "target_lane_projection",
             "speed_limit": target_edge["speed_limit"],
         })
@@ -1304,6 +1426,159 @@ class NavigationExecutor(Node):
             x + right_x * offset,
             y + right_y * offset
         )
+    
+    def get_vehicle_avoidance_target(self):
+        """
+        Decide cosa fare rispetto agli altri veicoli.
+
+        Ritorna:
+        - None: nessun rischio utile
+        - {"type": "STOP", ...}: veicolo che attraversa / incrocio occupato
+        - {"type": "AVOID_RIGHT", "x": ..., "y": ...}: quasi frontale, schiva dolcemente a destra
+
+        Nota importante:
+        la schivata NON si usa per veicoli perpendicolari. Per quelli ci si ferma.
+        """
+        if not self.has_odom:
+            return None
+
+        now = self.get_clock().now().nanoseconds / 1e9
+
+        forward_x = math.cos(self.current_yaw)
+        forward_y = math.sin(self.current_yaw)
+
+        right_x = math.sin(self.current_yaw)
+        right_y = -math.cos(self.current_yaw)
+
+        best_avoid = None
+        best_avoid_forward = float("inf")
+        best_stop = None
+        best_stop_score = float("inf")
+
+        for vehicle_id, other in list(self.other_vehicles.items()):
+            stamp = float(other.get("stamp", 0.0))
+            if now - stamp > 1.0:
+                continue
+
+            other_x = float(other.get("x", 0.0))
+            other_y = float(other.get("y", 0.0))
+            other_yaw = float(other.get("yaw", 0.0))
+
+            dx = other_x - self.current_x
+            dy = other_y - self.current_y
+
+            euclidean_dist = math.sqrt(dx * dx + dy * dy)
+
+            forward_dist = dx * forward_x + dy * forward_y
+            side_dist = -forward_y * dx + forward_x * dy
+
+            # Non reagire a roba chiaramente dietro, salvo emergenza quasi fisica.
+            if forward_dist < -0.75 and euclidean_dist > 1.6:
+                continue
+
+            heading_diff = abs(self.normalize_angle(other_yaw - self.current_yaw))
+
+            same_direction = heading_diff < math.radians(45)
+            opposite_direction = heading_diff > math.radians(165)
+            crossing_direction = not same_direction and not opposite_direction
+
+            other_forward_x = math.cos(other_yaw)
+            other_forward_y = math.sin(other_yaw)
+
+            # TTC semplificato.
+            # Approssimo velocità uguali: conta se le direzioni ci stanno chiudendo la distanza.
+            relative_vx = other_forward_x - forward_x
+            relative_vy = other_forward_y - forward_y
+
+            closing_speed = -((dx * relative_vx) + (dy * relative_vy))
+
+            if euclidean_dist > 0.001 and closing_speed > 0.0:
+                time_to_conflict = euclidean_dist / closing_speed
+            else:
+                time_to_conflict = float("inf")
+
+            # 1) Veicolo perpendicolare / diagonale davanti:
+            # non schivare. Se sta attraversando la mia zona, stop.
+            if crossing_direction:
+                crossing_risk = (
+                    -0.3 < forward_dist < 6.0
+                    and abs(side_dist) < 3.0
+                    and (
+                        closing_speed > 0.15
+                        or euclidean_dist < 3.0
+                    )
+                )
+
+                if crossing_risk:
+                    score = max(0.0, forward_dist) + abs(side_dist) * 0.35
+                    if score < best_stop_score:
+                        best_stop_score = score
+                        best_stop = {
+                            "type": "STOP",
+                            "reason": "crossing_vehicle",
+                            "vehicle_id": vehicle_id,
+                            "forward_dist": forward_dist,
+                            "side_dist": side_dist,
+                            "euclidean_dist": euclidean_dist,
+                            "heading_diff": heading_diff,
+                            "closing_speed": closing_speed,
+                            "time_to_conflict": time_to_conflict,
+                        }
+
+                continue
+
+            # 2) Veicolo stessa direzione:
+            # niente avoidance laterale. Lo gestisce get_vehicle_proximity_factor().
+            if same_direction:
+                continue
+
+            # 3) Quasi frontale:
+            # schiva solo se è davvero nella mia corsia/mezzeria, non se è di traverso nell'incrocio.
+            frontal_risk = (
+                opposite_direction
+                and 1.0 < forward_dist < 8.5
+                and abs(side_dist) < 1.25
+                and (
+                    closing_speed > 0.1
+                    or time_to_conflict < 6.0
+                )
+            )
+
+            if not frontal_risk:
+                continue
+
+            if forward_dist < best_avoid_forward:
+                best_avoid_forward = forward_dist
+                best_avoid = {
+                    "vehicle_id": vehicle_id,
+                    "forward_dist": forward_dist,
+                    "side_dist": side_dist,
+                    "euclidean_dist": euclidean_dist,
+                    "heading_diff": heading_diff,
+                    "closing_speed": closing_speed,
+                    "time_to_conflict": time_to_conflict,
+                }
+
+        # Lo stop ha priorità sull'avoidance:
+        # se l'incrocio è occupato da uno che attraversa, non provo a passargli attorno.
+        if best_stop is not None:
+            return best_stop
+
+        if best_avoid is None:
+            return None
+
+        # Schivata dolce: tanto avanti, poco a destra.
+        # Così non curva come un pazzo e non va sui semafori/marciapiedi.
+        evade_forward = 3.2
+        evade_right = 1.0
+
+        return {
+            "type": "AVOID_RIGHT",
+            "x": self.current_x + forward_x * evade_forward + right_x * evade_right,
+            "y": self.current_y + forward_y * evade_forward + right_y * evade_right,
+            "reason": best_avoid,
+        }
+
 
     def get_lane_follow_target(self, waypoint):
         """
@@ -1316,6 +1591,25 @@ class NavigationExecutor(Node):
         """
         preferred_edge_id = waypoint.get("edge_id")
         destination_node_id = waypoint.get("node_id")
+        avoidance = self.get_vehicle_avoidance_target()
+
+        if avoidance is not None:
+            if avoidance["type"] == "STOP":
+                return {
+                    "x": self.current_x,
+                    "y": self.current_y,
+                    "mode_prefix": "VEHICLE_CROSSING_STOP",
+                    "lane_error": 0.0,
+                    "edge_id": preferred_edge_id or "-",
+                }
+
+            return {
+                "x": avoidance["x"],
+                "y": avoidance["y"],
+                "mode_prefix": "VEHICLE_AVOIDANCE_RIGHT",
+                "lane_error": 0.0,
+                "edge_id": preferred_edge_id or "-",
+            }
 
         lane_projection = self.find_nearest_lane_projection(
             self.current_x,
@@ -1324,6 +1618,9 @@ class NavigationExecutor(Node):
             destination_node_id=destination_node_id,
             allow_blocked=True
         )
+
+        if destination_node_id is None:
+            destination_node_id = lane_projection.get("destination_node_id")
 
         edge = lane_projection["edge"]
 
@@ -1496,6 +1793,26 @@ class NavigationExecutor(Node):
     def move_towards_waypoint(self, waypoint, requested_max_speed, obstacle_factor=1.0):
         follow_target = self.get_lane_follow_target(waypoint)
 
+        if follow_target["mode_prefix"] == "VEHICLE_CROSSING_STOP":
+            self.stop_vehicle()
+
+            waypoint["_last_control"] = {
+                "target_x": self.current_x,
+                "target_y": self.current_y,
+                "target_angle": self.current_yaw,
+                "angle_error": 0.0,
+                "distance": 0.0,
+                "lane_error": follow_target["lane_error"],
+                "linear_speed": 0.0,
+                "angular_speed": 0.0,
+                "motion_mode": "VEHICLE_CROSSING_STOP",
+                "max_speed": 0.0,
+                "obstacle_factor": obstacle_factor,
+                "edge_id": follow_target["edge_id"],
+            }
+
+            return
+
         target_x = follow_target["x"]
         target_y = follow_target["y"]
 
@@ -1532,9 +1849,15 @@ class NavigationExecutor(Node):
 
         abs_error = abs(angle_error)
 
-        if abs_error > 0.35:
-            linear_speed = 0.0
+        if abs_error > 0.75:
+            linear_speed = 0
             motion_mode = "TURN_IN_PLACE"
+        elif abs_error > 0.55:
+            linear_speed = 0.03
+            motion_mode = "SLOW_SLOW_SLOW_TURN"
+        elif abs_error > 0.35:
+            linear_speed = 0.08
+            motion_mode = "SLOW_SLOW_TURN"
         elif abs_error > 0.15:
             linear_speed = min(max_speed, self.linear_k * distance, 0.25)
             motion_mode = "SLOW_TURN"
@@ -1552,12 +1875,11 @@ class NavigationExecutor(Node):
 
         if follow_target["mode_prefix"]:
             motion_mode = f'{follow_target["mode_prefix"]}_{motion_mode}'
+        
+        if follow_target["mode_prefix"] == "VEHICLE_AVOIDANCE_RIGHT":
+            linear_speed = max(linear_speed, min(max_speed, 0.65))
 
-        cmd = Twist()
-        cmd.linear.x = float(linear_speed)
-        cmd.angular.z = float(angular_speed)
-
-        self.cmd_vel_pub.publish(cmd)
+        self.publish_limited_cmd(linear_speed, angular_speed)
 
         waypoint["_last_control"] = {
             "target_x": target_x,
@@ -1575,13 +1897,14 @@ class NavigationExecutor(Node):
         }
 
     def stop_vehicle(self):
-        self.cmd_vel_pub.publish(Twist())
+        self.publish_limited_cmd(0.0, 0.0)
 
     # ============================================================
     # LOGGING
     # ============================================================
 
     def log_navigation_event(self, message):
+        return
         self.get_logger().info(
             f"[NAV] vehicle={self.vehicle_id} | mission={self.current_mission_id} | {message}"
         )

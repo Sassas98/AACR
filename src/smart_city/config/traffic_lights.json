@@ -1,19 +1,52 @@
 {
   "traffic_lights": [
-    { "node_id": "n2", "model": "traffic_light", "x": -20.0, "y": 40.0 },
-    { "node_id": "n3", "model": "traffic_light", "x": 0.0, "y": 40.0 },
-    { "node_id": "n4", "model": "traffic_light", "x": 20.0, "y": 40.0 },
-
-    { "node_id": "n7", "model": "traffic_light", "x": -20.0, "y": 20.0 },
-    { "node_id": "n9", "model": "traffic_light", "x": 20.0, "y": 20.0 },
-
-    { "node_id": "n14", "model": "traffic_light", "x": 20.0, "y": 0.0 },
-
-    { "node_id": "n17", "model": "traffic_light", "x": -20.0, "y": -20.0 },
-    { "node_id": "n19", "model": "traffic_light", "x": 20.0, "y": -20.0 },
-
-    { "node_id": "n22", "model": "traffic_light", "x": -20.0, "y": -40.0 },
-    { "node_id": "n23", "model": "traffic_light", "x": 0.0, "y": -40.0 },
-    { "node_id": "n24", "model": "traffic_light", "x": 20.0, "y": -40.0 }
+    {
+      "node_id": "n7",
+      "model": "traffic_light",
+      "x": -20.0,
+      "y": 20.0
+    },
+    {
+      "node_id": "n9",
+      "model": "traffic_light",
+      "x": 20.0,
+      "y": 20.0
+    },
+    {
+      "node_id": "n14",
+      "model": "traffic_light",
+      "x": 20.0,
+      "y": 0.0
+    },
+    {
+      "node_id": "n17",
+      "model": "traffic_light",
+      "x": -20.0,
+      "y": -20.0
+    },
+    {
+      "node_id": "n19",
+      "model": "traffic_light",
+      "x": 20.0,
+      "y": -20.0
+    },
+    {
+      "node_id": "n22",
+      "model": "traffic_light",
+      "x": -20.0,
+      "y": -40.0
+    },
+    {
+      "node_id": "n23",
+      "model": "traffic_light",
+      "x": 0.0,
+      "y": -40.0
+    },
+    {
+      "node_id": "n24",
+      "model": "traffic_light",
+      "x": 20.0,
+      "y": -40.0
+    }
   ]
 }

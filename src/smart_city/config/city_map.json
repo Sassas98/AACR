@@ -39,18 +39,12 @@
     { "id": "e4", "from": "n4", "to": "n5", "speed_limit": 4.0 },
 
     { "id": "e5", "from": "n6", "to": "n7", "speed_limit": 3.0 },
-    { "id": "e6", "from": "n7", "to": "n8", "speed_limit": 3.0 },
-    { "id": "e7", "from": "n8", "to": "n9", "speed_limit": 3.0 },
     { "id": "e8", "from": "n9", "to": "n10", "speed_limit": 3.0 },
 
-    { "id": "e9", "from": "n11", "to": "n12", "speed_limit": 5.0 },
-    { "id": "e10", "from": "n12", "to": "n13", "speed_limit": 5.0 },
     { "id": "e11", "from": "n13", "to": "n14", "speed_limit": 5.0 },
     { "id": "e12", "from": "n14", "to": "n15", "speed_limit": 5.0 },
 
     { "id": "e13", "from": "n16", "to": "n17", "speed_limit": 3.0 },
-    { "id": "e14", "from": "n17", "to": "n18", "speed_limit": 3.0 },
-    { "id": "e15", "from": "n18", "to": "n19", "speed_limit": 3.0 },
     { "id": "e16", "from": "n19", "to": "n20", "speed_limit": 3.0 },
 
     { "id": "e17", "from": "n21", "to": "n22", "speed_limit": 4.0 },

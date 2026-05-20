@@ -10,54 +10,106 @@ from std_msgs.msg import String
 
 
 class GazeboVisualController(Node):
+    """
+    Nodo puramente visuale per Gazebo.
+
+    Responsabilità:
+    - mostrare marker per richieste taxi ricevute su /gazebo/taxi_request;
+    - rimuovere i marker taxi quando un taxi raggiunge il pickup;
+    - mostrare marker semaforici in base agli status ricevuti su /traffic_light/status.
+
+    Nota:
+    - non genera richieste taxi;
+    - non decide i semafori;
+    - non gestisce più bus booking.
+    """
 
     def __init__(self):
         super().__init__("gazebo_visual_controller")
 
-        self.declare_parameter("world_name", "default")
-        self.declare_parameter("pickup_reached_distance", 1.2)
-        self.declare_parameter("bus_stop_reached_distance", 1.5)
+        self.declare_parameter("world_name", "smart_city_world")
+        self.declare_parameter("pickup_reached_distance", 3.6)
         self.declare_parameter("city_map_file", "config/city_map.json")
 
+        self.world_name = self.get_parameter("world_name").value
+        self.pickup_reached_distance = float(
+            self.get_parameter("pickup_reached_distance").value
+        )
         self.city_map_file = self.get_parameter("city_map_file").value
+
         self.intersection_positions = self.load_intersection_positions(
             self.city_map_file
         )
 
-        self.world_name = self.get_parameter("world_name").value
-        self.pickup_reached_distance = float(self.get_parameter("pickup_reached_distance").value)
-        self.bus_stop_reached_distance = float(self.get_parameter("bus_stop_reached_distance").value)
-
         self.active_taxi_requests = {}
-        self.active_bus_bookings = {}
         self.vehicle_states = {}
+
+        # node_id -> colore attuale del marker visuale
+        # Serve anche per sapere se il marker è già stato creato:
+        # se non è presente qui, NON provo a cancellarlo.
         self.traffic_light_markers = {}
 
-        self.create_subscription(String, "/gazebo/taxi_request", self.on_taxi_request, 10)
-        self.create_subscription(String, "/gazebo/bus_booking", self.on_bus_booking, 10)
-        self.create_subscription(String, "/vehicle_states", self.on_vehicle_state, 50)
-        self.create_subscription(String, "/traffic_light/status", self.on_traffic_light_status, 10)
+        self.create_subscription(
+            String,
+            "/gazebo/taxi_request",
+            self.on_taxi_request,
+            10
+        )
+
+        self.create_subscription(
+            String,
+            "/vehicle_states",
+            self.on_vehicle_state,
+            50
+        )
+
+        self.create_subscription(
+            String,
+            "/traffic_light/status",
+            self.on_traffic_light_status,
+            50
+        )
 
         self.timer = self.create_timer(0.5, self.cleanup_loop)
 
-        self.get_logger().info("gazebo_visual_controller avviato")
+        self.get_logger().info(
+            f"gazebo_visual_controller avviato | world={self.world_name}"
+        )
+
+    # ------------------------------------------------------------
+    # MAPPA / POSIZIONI INCROCI
+    # ------------------------------------------------------------
 
     def load_intersection_positions(self, file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            city_map = json.load(f)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                city_map = json.load(f)
+        except Exception as ex:
+            self.get_logger().warn(
+                f"impossibile leggere city_map_file={file_path}: {ex}"
+            )
+            return {}
 
         result = {}
 
-        for node in city_map["nodes"]:
-            result[node["id"]] = {
-                "x": float(node["x"]),
-                "y": float(node["y"]),
-            }
+        for node in city_map.get("nodes", []):
+            node_id = node.get("id")
+
+            if not node_id:
+                continue
+
+            try:
+                result[node_id] = {
+                    "x": float(node["x"]),
+                    "y": float(node["y"]),
+                }
+            except Exception:
+                continue
 
         return result
 
     # ------------------------------------------------------------
-    # CALLBACK REQUEST
+    # CALLBACK REQUEST TAXI
     # ------------------------------------------------------------
 
     def on_taxi_request(self, msg):
@@ -67,13 +119,26 @@ class GazeboVisualController(Node):
             return
 
         request_id = data.get("request_id")
-        x = float(data.get("pickup_x"))
-        y = float(data.get("pickup_y"))
 
         if not request_id:
             return
 
+        try:
+            x = float(data.get("pickup_x"))
+            y = float(data.get("pickup_y"))
+        except Exception:
+            self.get_logger().warn(
+                f"taxi request {request_id} senza pickup valido: {data}"
+            )
+            return
+
         model_name = f"visual_taxi_request_{request_id}"
+
+        # Se esiste già un marker con lo stesso id, lo aggiorno senza
+        # causare spam inutile: lo cancello solo se lo avevo già creato.
+        previous = self.active_taxi_requests.get(request_id)
+        if previous is not None:
+            self.delete_model(previous["model_name"])
 
         self.active_taxi_requests[request_id] = {
             "model_name": model_name,
@@ -87,44 +152,13 @@ class GazeboVisualController(Node):
             x=x,
             y=y,
             z=0.35,
-            color=(1.0, 0.85, 0.05, 1.0),
+            color=(1.0, 0.45, 0.0, 1.0),
             size=(0.55, 0.55, 0.7)
         )
 
-        self.get_logger().info(f"spawn taxi request marker {request_id}")
-
-    def on_bus_booking(self, msg):
-        try:
-            data = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-
-        booking_id = data.get("booking_id")
-        x = float(data.get("x"))
-        y = float(data.get("y"))
-
-        if not booking_id:
-            return
-
-        model_name = f"visual_bus_booking_{booking_id}"
-
-        self.active_bus_bookings[booking_id] = {
-            "model_name": model_name,
-            "x": x,
-            "y": y,
-            "created_at": time.time(),
-        }
-
-        self.spawn_marker(
-            model_name=model_name,
-            x=x,
-            y=y,
-            z=0.4,
-            color=(1.0, 0.45, 0.05, 1.0),
-            size=(0.75, 0.75, 0.8)
+        self.get_logger().info(
+            f"spawn taxi request marker {request_id} a ({x:.2f}, {y:.2f})"
         )
-
-        self.get_logger().info(f"spawn bus booking marker {booking_id}")
 
     def on_vehicle_state(self, msg):
         try:
@@ -139,6 +173,10 @@ class GazeboVisualController(Node):
 
         self.vehicle_states[vehicle_id] = data
 
+    # ------------------------------------------------------------
+    # CALLBACK SEMAFORI
+    # ------------------------------------------------------------
+
     def on_traffic_light_status(self, msg):
         try:
             data = json.loads(msg.data)
@@ -150,62 +188,77 @@ class GazeboVisualController(Node):
         if not node_id:
             return
 
-        # Se il manager pubblica un campo "color", lo uso.
-        # Altrimenti deduco verde se ci sono movimenti consentiti.
-        color_name = data.get("color")
-
-        if color_name is None:
-            allowed = data.get("allowed_movements", [])
-            color_name = "green" if allowed else "red"
-
-        marker_name = f"visual_traffic_light_{node_id}"
-
-        old = self.traffic_light_markers.get(node_id)
-        if old == color_name:
-            return
-
-        self.delete_model(marker_name)
-
         node = self.intersection_positions.get(node_id)
 
+        # Se il traffic_light_manager pubblica uno status per un nodo che
+        # non è più nella mappa, ignoro. Non provo a creare/cancellare nulla.
         if node is None:
             return
 
-        x = float(node["x"])
-        y = float(node["y"])
+        color_name = self.extract_traffic_light_color(data)
+        marker_name = f"visual_traffic_light_{node_id}"
 
-        color = self.color_for_traffic_light(color_name)
+        old_color = self.traffic_light_markers.get(node_id)
+
+        # Colore invariato: non faccio niente.
+        if old_color == color_name:
+            return
+
+        # Cancello solo se so di averlo creato prima.
+        # Questo evita:
+        # Entity named [visual_traffic_light_X] not found, so not removed.
+        if old_color is not None:
+            self.delete_model(marker_name)
 
         self.spawn_marker(
             model_name=marker_name,
-            x=x,
-            y=y,
+            x=float(node["x"]),
+            y=float(node["y"]),
             z=2.2,
-            color=color,
+            color=self.color_for_traffic_light(color_name),
             size=(0.45, 0.45, 0.45)
         )
 
         self.traffic_light_markers[node_id] = color_name
 
+    def extract_traffic_light_color(self, data):
+        color_name = data.get("color")
+
+        if color_name in ("green", "yellow", "red"):
+            return color_name
+
+        # Fallback per manager che non pubblicano "color".
+        allowed = data.get("allowed_movements", [])
+
+        if allowed:
+            return "green"
+
+        return "red"
+
     # ------------------------------------------------------------
-    # CLEANUP MARKER
+    # CLEANUP MARKER TAXI
     # ------------------------------------------------------------
 
     def cleanup_loop(self):
         self.cleanup_taxi_requests()
-        self.cleanup_bus_bookings()
 
     def cleanup_taxi_requests(self):
         to_remove = []
 
-        for request_id, req in self.active_taxi_requests.items():
-            for vehicle_id, vehicle in self.vehicle_states.items():
+        for request_id, req in list(self.active_taxi_requests.items()):
+            for vehicle_id, vehicle in list(self.vehicle_states.items()):
                 if not vehicle_id.startswith("taxi_"):
                     continue
 
+                try:
+                    vehicle_x = float(vehicle["x"])
+                    vehicle_y = float(vehicle["y"])
+                except Exception:
+                    continue
+
                 d = self.distance(
-                    float(vehicle["x"]),
-                    float(vehicle["y"]),
+                    vehicle_x,
+                    vehicle_y,
                     req["x"],
                     req["y"]
                 )
@@ -215,33 +268,15 @@ class GazeboVisualController(Node):
                     break
 
         for request_id in to_remove:
-            req = self.active_taxi_requests.pop(request_id)
+            req = self.active_taxi_requests.pop(request_id, None)
+
+            if req is None:
+                continue
+
             self.delete_model(req["model_name"])
-            self.get_logger().info(f"despawn taxi request marker {request_id}")
-
-    def cleanup_bus_bookings(self):
-        to_remove = []
-
-        for booking_id, booking in self.active_bus_bookings.items():
-            for vehicle_id, vehicle in self.vehicle_states.items():
-                if not vehicle_id.startswith("bus_"):
-                    continue
-
-                d = self.distance(
-                    float(vehicle["x"]),
-                    float(vehicle["y"]),
-                    booking["x"],
-                    booking["y"]
-                )
-
-                if d <= self.bus_stop_reached_distance:
-                    to_remove.append(booking_id)
-                    break
-
-        for booking_id in to_remove:
-            booking = self.active_bus_bookings.pop(booking_id)
-            self.delete_model(booking["model_name"])
-            self.get_logger().info(f"despawn bus booking marker {booking_id}")
+            self.get_logger().info(
+                f"despawn taxi request marker {request_id}"
+            )
 
     # ------------------------------------------------------------
     # GAZEBO
@@ -268,13 +303,6 @@ class GazeboVisualController(Node):
                   <diffuse>{r} {g} {b} {a}</diffuse>
                 </material>
               </visual>
-              <collision name='collision'>
-                <geometry>
-                  <box>
-                    <size>{sx} {sy} {sz}</size>
-                  </box>
-                </geometry>
-              </collision>
             </link>
           </model>
         </sdf>
@@ -319,7 +347,9 @@ class GazeboVisualController(Node):
                 timeout=2.0
             )
         except Exception as ex:
-            self.get_logger().warn(f"Gazebo service fallito {service}: {ex}")
+            self.get_logger().warn(
+                f"Gazebo service fallito {service}: {ex}"
+            )
 
     # ------------------------------------------------------------
     # UTILITY
@@ -337,6 +367,7 @@ class GazeboVisualController(Node):
     def distance(self, x1, y1, x2, y2):
         dx = x2 - x1
         dy = y2 - y1
+
         return math.sqrt(dx * dx + dy * dy)
 
 

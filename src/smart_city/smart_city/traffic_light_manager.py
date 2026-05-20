@@ -9,43 +9,90 @@ from std_msgs.msg import String
 
 
 class LightPhase(str, Enum):
-    PHASE_A = "PHASE_A"
-    PHASE_B = "PHASE_B"
+    GREEN_A = "GREEN_A"
+    YELLOW_A = "YELLOW_A"
+    ALL_RED_A = "ALL_RED_A"
+    GREEN_B = "GREEN_B"
+    YELLOW_B = "YELLOW_B"
+    ALL_RED_B = "ALL_RED_B"
 
 
 class TrafficLightManager(Node):
+    """
+    Manager semaforico per un singolo incrocio.
+
+    Logica:
+    - divide i rami dell'incrocio in due gruppi compatibili: gruppo A e gruppo B;
+    - durante GREEN_A passano solo i movimenti del gruppo A;
+    - durante GREEN_B passano solo i movimenti del gruppo B;
+    - durante YELLOW_* e ALL_RED_* non passa nessuno: scelta conservativa per evitare incidenti;
+    - pubblica anche signal_states per visualizzare rosso/verde per ogni ramo.
+
+    Compatibile sia con i vecchi parametri:
+      base_phase_duration, min_phase_duration, max_phase_duration
+    sia con quelli del launch attuale:
+      green_duration, yellow_duration, min_green_duration, max_green_duration
+    """
 
     def __init__(self):
         super().__init__("traffic_light_manager")
 
         self.declare_parameter("node_id", "n2")
         self.declare_parameter("map_config_file", "config/city_map.json")
+
+        # Vecchi parametri
         self.declare_parameter("base_phase_duration", 6.0)
         self.declare_parameter("min_phase_duration", 3.0)
         self.declare_parameter("max_phase_duration", 12.0)
 
+        # Parametri usati dal tuo launch attuale
+        self.declare_parameter("green_duration", 320.0)
+        self.declare_parameter("yellow_duration", 80.0)
+        self.declare_parameter("all_red_duration", 80.0)
+        self.declare_parameter("min_green_duration", 160.0)
+        self.declare_parameter("max_green_duration", 640.0)
+
+        self.declare_parameter("priority_request_ttl_sec", 10.0)
+
         self.node_id = self.get_parameter("node_id").value
-        self.base_phase_duration = float(self.get_parameter("base_phase_duration").value)
-        self.min_phase_duration = float(self.get_parameter("min_phase_duration").value)
-        self.max_phase_duration = float(self.get_parameter("max_phase_duration").value)
+
+        # Preferisco i parametri nuovi, ma lascio compatibilità.
+        self.green_duration = float(self.get_parameter("green_duration").value)
+        self.yellow_duration = float(self.get_parameter("yellow_duration").value)
+        self.all_red_duration = float(self.get_parameter("all_red_duration").value)
+        self.min_green_duration = float(self.get_parameter("min_green_duration").value)
+        self.max_green_duration = float(self.get_parameter("max_green_duration").value)
+
+        # Se qualcuno usa ancora i vecchi parametri, restano sensati.
+        old_base = float(self.get_parameter("base_phase_duration").value)
+        old_min = float(self.get_parameter("min_phase_duration").value)
+        old_max = float(self.get_parameter("max_phase_duration").value)
+
+        if self.green_duration <= 0.0:
+            self.green_duration = old_base
+        if self.min_green_duration <= 0.0:
+            self.min_green_duration = old_min
+        if self.max_green_duration <= 0.0:
+            self.max_green_duration = old_max
+
+        self.priority_request_ttl_sec = float(
+            self.get_parameter("priority_request_ttl_sec").value
+        )
 
         self.nodes = {}
         self.edges = []
         self.connected_nodes = []
+        self.group_a = []
+        self.group_b = []
 
         self.load_map()
+        self.build_phase_groups()
 
-        self.current_phase = LightPhase.PHASE_A
+        self.current_phase = LightPhase.GREEN_A
         self.phase_started_at = time.time()
-
         self.priority_requests = []
 
-        self.status_pub = self.create_publisher(
-            String,
-            "/traffic_light/status",
-            10
-        )
-
+        self.status_pub = self.create_publisher(String, "/traffic_light/status", 10)
         self.priority_sub = self.create_subscription(
             String,
             "/traffic_light/priority_request",
@@ -53,14 +100,13 @@ class TrafficLightManager(Node):
             10
         )
 
-        self.timer = self.create_timer(
-            0.5,
-            self.update
-        )
+        self.timer = self.create_timer(0.25, self.update)
 
         self.get_logger().info(
             f"traffic_light_manager avviato su nodo {self.node_id}, "
-            f"grado={len(self.connected_nodes)}, connected={self.connected_nodes}"
+            f"grado={len(self.connected_nodes)}, "
+            f"connected={self.connected_nodes}, "
+            f"group_a={self.group_a}, group_b={self.group_b}"
         )
 
     # ------------------------------------------------------------------
@@ -80,34 +126,101 @@ class TrafficLightManager(Node):
             data = json.load(f)
 
         for node in data["nodes"]:
-            self.nodes[node["id"]] = node
+            self.nodes[node["id"]] = {
+                "id": node["id"],
+                "x": float(node["x"]),
+                "y": float(node["y"]),
+            }
 
         self.edges = data["edges"]
 
         if self.node_id not in self.nodes:
             raise ValueError(f"Nodo semaforo inesistente: {self.node_id}")
 
-        self.connected_nodes = []
+        connected = []
 
         for edge in self.edges:
             if edge["from"] == self.node_id:
-                self.connected_nodes.append(edge["to"])
+                connected.append(edge["to"])
             elif edge["to"] == self.node_id:
-                self.connected_nodes.append(edge["from"])
+                connected.append(edge["from"])
+
+        # Ordino geometricamente per avere fasi stabili e non dipendenti
+        # dall'ordine casuale degli edge nel JSON.
+        center = self.nodes[self.node_id]
+
+        def angle_of(node_id):
+            n = self.nodes[node_id]
+            return math_atan2(n["y"] - center["y"], n["x"] - center["x"])
+
+        connected = sorted(set(connected), key=angle_of)
+        self.connected_nodes = connected
 
         degree = len(self.connected_nodes)
 
         if degree < 3:
             raise ValueError(
                 f"Il nodo {self.node_id} ha grado {degree}: "
-                f"non richiede semaforo secondo la tua logica"
+                f"non richiede semaforo secondo la logica attuale"
             )
 
         if degree > 4:
             raise ValueError(
                 f"Il nodo {self.node_id} ha grado {degree}: "
-                f"la logica prevista supporta massimo 4 archi"
+                f"supporto previsto massimo 4 archi"
             )
+
+    def build_phase_groups(self):
+        degree = len(self.connected_nodes)
+
+        if degree == 3:
+            # Per un T-junction:
+            # - gruppo A: due rami più opposti/continui;
+            # - gruppo B: ramo laterale.
+            a, b, side = self.choose_main_pair_for_degree_3()
+            self.group_a = [a, b]
+            self.group_b = [side]
+            return
+
+        if degree == 4:
+            # I nodi sono ordinati ad angolo attorno all'incrocio.
+            # I rami opposti sono 0-2 e 1-3.
+            self.group_a = [self.connected_nodes[0], self.connected_nodes[2]]
+            self.group_b = [self.connected_nodes[1], self.connected_nodes[3]]
+            return
+
+    def choose_main_pair_for_degree_3(self):
+        center = self.nodes[self.node_id]
+        best_pair = None
+        best_score = -1.0
+
+        nodes = self.connected_nodes
+
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                a = self.nodes[nodes[i]]
+                b = self.nodes[nodes[j]]
+
+                ax = a["x"] - center["x"]
+                ay = a["y"] - center["y"]
+                bx = b["x"] - center["x"]
+                by = b["y"] - center["y"]
+
+                la = max(0.000001, (ax * ax + ay * ay) ** 0.5)
+                lb = max(0.000001, (bx * bx + by * by) ** 0.5)
+
+                dot = (ax * bx + ay * by) / (la * lb)
+
+                # Più è vicino a -1, più sono opposti.
+                score = -dot
+
+                if score > best_score:
+                    best_score = score
+                    best_pair = (nodes[i], nodes[j])
+
+        a, b = best_pair
+        side = [n for n in nodes if n not in best_pair][0]
+        return a, b, side
 
     # ------------------------------------------------------------------
     # PRIORITY REQUEST
@@ -138,14 +251,27 @@ class TrafficLightManager(Node):
         if to_node is not None and to_node not in self.connected_nodes:
             return
 
-        request["received_at"] = time.time()
-
-        self.priority_requests.append(request)
-
-        self.get_logger().info(
-            f"{self.node_id}: richiesta priorità da {request['vehicle_id']} "
-            f"{from_node}->{self.node_id}->{to_node}, priority={request['priority']}"
+        # Evito accumuli duplicati dello stesso veicolo/missione/movimento.
+        key = (
+            request["vehicle_id"],
+            request["mission_id"],
+            from_node,
+            to_node,
         )
+
+        now = time.time()
+        self.priority_requests = [
+            r for r in self.priority_requests
+            if (
+                r["vehicle_id"],
+                r["mission_id"],
+                r["from_node_id"],
+                r["to_node_id"],
+            ) != key
+        ]
+
+        request["received_at"] = now
+        self.priority_requests.append(request)
 
     # ------------------------------------------------------------------
     # UPDATE
@@ -154,20 +280,31 @@ class TrafficLightManager(Node):
     def update(self):
         self.cleanup_old_requests()
 
-        desired_phase = self.choose_phase()
-
         elapsed = time.time() - self.phase_started_at
 
-        if desired_phase != self.current_phase and elapsed >= self.min_phase_duration:
-            self.current_phase = desired_phase
-            self.phase_started_at = time.time()
+        if self.current_phase == LightPhase.GREEN_A:
+            if self.should_leave_green(LightPhase.GREEN_A, elapsed):
+                self.set_phase(LightPhase.YELLOW_A)
 
-        elif elapsed >= self.max_phase_duration:
-            self.switch_phase()
+        elif self.current_phase == LightPhase.YELLOW_A:
+            if elapsed >= self.yellow_duration:
+                self.set_phase(LightPhase.ALL_RED_A)
 
-        elif elapsed >= self.base_phase_duration and desired_phase != self.current_phase:
-            self.current_phase = desired_phase
-            self.phase_started_at = time.time()
+        elif self.current_phase == LightPhase.ALL_RED_A:
+            if elapsed >= self.all_red_duration:
+                self.set_phase(LightPhase.GREEN_B)
+
+        elif self.current_phase == LightPhase.GREEN_B:
+            if self.should_leave_green(LightPhase.GREEN_B, elapsed):
+                self.set_phase(LightPhase.YELLOW_B)
+
+        elif self.current_phase == LightPhase.YELLOW_B:
+            if elapsed >= self.yellow_duration:
+                self.set_phase(LightPhase.ALL_RED_B)
+
+        elif self.current_phase == LightPhase.ALL_RED_B:
+            if elapsed >= self.all_red_duration:
+                self.set_phase(LightPhase.GREEN_A)
 
         self.publish_status()
 
@@ -176,17 +313,31 @@ class TrafficLightManager(Node):
 
         self.priority_requests = [
             r for r in self.priority_requests
-            if now - r["received_at"] <= 10.0
+            if now - r["received_at"] <= self.priority_request_ttl_sec
         ]
 
-    def choose_phase(self):
+    def should_leave_green(self, phase, elapsed):
+        if elapsed < self.min_green_duration:
+            return False
+
+        if elapsed >= self.max_green_duration:
+            return True
+
+        desired = self.choose_green_phase()
+
+        if desired != phase and elapsed >= self.min_green_duration:
+            return True
+
+        if elapsed >= self.green_duration:
+            return True
+
+        return False
+
+    def choose_green_phase(self):
         if not self.priority_requests:
-            elapsed = time.time() - self.phase_started_at
-
-            if elapsed >= self.base_phase_duration:
-                return self.other_phase()
-
-            return self.current_phase
+            if self.current_phase in (LightPhase.GREEN_A, LightPhase.YELLOW_A, LightPhase.ALL_RED_A):
+                return LightPhase.GREEN_B
+            return LightPhase.GREEN_A
 
         score_a = 0
         score_b = 0
@@ -196,108 +347,86 @@ class TrafficLightManager(Node):
                 "from": request["from_node_id"],
                 "to": request["to_node_id"]
             }
-
             priority = int(request.get("priority", 1))
 
-            if self.movement_allowed_in_phase(movement, LightPhase.PHASE_A):
+            if self.movement_allowed_in_green_phase(movement, LightPhase.GREEN_A):
                 score_a += priority
 
-            if self.movement_allowed_in_phase(movement, LightPhase.PHASE_B):
+            if self.movement_allowed_in_green_phase(movement, LightPhase.GREEN_B):
                 score_b += priority
 
         if score_a > score_b:
-            return LightPhase.PHASE_A
+            return LightPhase.GREEN_A
 
         if score_b > score_a:
-            return LightPhase.PHASE_B
+            return LightPhase.GREEN_B
 
-        return self.current_phase
+        if self.current_phase in (LightPhase.GREEN_A, LightPhase.YELLOW_A, LightPhase.ALL_RED_A):
+            return LightPhase.GREEN_A
 
-    def switch_phase(self):
-        self.current_phase = self.other_phase()
+        return LightPhase.GREEN_B
+
+    def set_phase(self, phase):
+        if phase == self.current_phase:
+            return
+
+        self.current_phase = phase
         self.phase_started_at = time.time()
 
-    def other_phase(self):
-        if self.current_phase == LightPhase.PHASE_A:
-            return LightPhase.PHASE_B
-
-        return LightPhase.PHASE_A
-
     # ------------------------------------------------------------------
-    # LOGICA SEMAFORO
+    # LOGICA MOVIMENTI
     # ------------------------------------------------------------------
 
     def get_allowed_movements(self):
-        degree = len(self.connected_nodes)
+        if self.current_phase not in (LightPhase.GREEN_A, LightPhase.GREEN_B):
+            return []
 
-        if degree == 3:
-            return self.get_allowed_movements_degree_3()
+        return self.get_allowed_movements_for_green_phase(self.current_phase)
 
-        if degree == 4:
-            return self.get_allowed_movements_degree_4()
+    def get_allowed_movements_for_green_phase(self, phase):
+        if phase == LightPhase.GREEN_A:
+            green_group = self.group_a
+            red_group = self.group_b
+        elif phase == LightPhase.GREEN_B:
+            green_group = self.group_b
+            red_group = self.group_a
+        else:
+            return []
 
-        return []
+        movements = []
 
-    def get_allowed_movements_degree_3(self):
-        """
-        Grado 3:
-        - fase A: passano i due rami principali tra loro
-        - fase B: passa il ramo laterale verso/da uno dei principali
+        # Movimenti dentro il gruppo verde.
+        # Esempio 4 vie: nord <-> sud, est <-> ovest.
+        for from_node in green_group:
+            for to_node in green_group:
+                if from_node != to_node:
+                    movements.append({"from": from_node, "to": to_node})
 
-        Per semplicità:
-        connected_nodes[0] e connected_nodes[1] = via continua
-        connected_nodes[2] = terza via
-        """
+        # Nel grado 3, quando il gruppo verde è il ramo laterale singolo,
+        # consentiamo entrata/uscita verso i due rami principali.
+        if len(self.connected_nodes) == 3 and len(green_group) == 1:
+            side = green_group[0]
+            for main in red_group:
+                movements.append({"from": side, "to": main})
+                movements.append({"from": main, "to": side})
 
-        main_a = self.connected_nodes[0]
-        main_b = self.connected_nodes[1]
-        side = self.connected_nodes[2]
+        return self.unique_movements(movements)
 
-        if self.current_phase == LightPhase.PHASE_A:
-            return [
-                {"from": main_a, "to": main_b},
-                {"from": main_b, "to": main_a}
-            ]
+    def unique_movements(self, movements):
+        seen = set()
+        result = []
 
-        return [
-            {"from": side, "to": main_a},
-            {"from": side, "to": main_b},
-            {"from": main_a, "to": side},
-            {"from": main_b, "to": side}
-        ]
+        for m in movements:
+            key = (m["from"], m["to"])
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(m)
 
-    def get_allowed_movements_degree_4(self):
-        """
-        Grado 4:
-        - fase A: passano connected_nodes[0] <-> connected_nodes[1]
-        - fase B: passano connected_nodes[2] <-> connected_nodes[3]
+        return result
 
-        Blocca quindi due vie per volta.
-        """
-
-        a = self.connected_nodes[0]
-        b = self.connected_nodes[1]
-        c = self.connected_nodes[2]
-        d = self.connected_nodes[3]
-
-        if self.current_phase == LightPhase.PHASE_A:
-            return [
-                {"from": a, "to": b},
-                {"from": b, "to": a}
-            ]
-
-        return [
-            {"from": c, "to": d},
-            {"from": d, "to": c}
-        ]
-
-    def movement_allowed_in_phase(self, movement, phase):
-        current_phase_backup = self.current_phase
-
-        self.current_phase = phase
-        allowed = self.get_allowed_movements()
-
-        self.current_phase = current_phase_backup
+    def movement_allowed_in_green_phase(self, movement, phase):
+        allowed = self.get_allowed_movements_for_green_phase(phase)
 
         for item in allowed:
             if item["from"] == movement["from"] and item["to"] == movement["to"]:
@@ -306,16 +435,64 @@ class TrafficLightManager(Node):
         return False
 
     # ------------------------------------------------------------------
-    # STATUS
+    # STATUS / VISUALIZZAZIONE
     # ------------------------------------------------------------------
+
+    def phase_color(self):
+        if self.current_phase in (LightPhase.GREEN_A, LightPhase.GREEN_B):
+            return "green"
+
+        if self.current_phase in (LightPhase.YELLOW_A, LightPhase.YELLOW_B):
+            return "yellow"
+
+        return "red"
+
+    def get_signal_states(self):
+        states = []
+
+        if self.current_phase == LightPhase.GREEN_A:
+            green_nodes = set(self.group_a)
+            yellow_nodes = set()
+        elif self.current_phase == LightPhase.GREEN_B:
+            green_nodes = set(self.group_b)
+            yellow_nodes = set()
+        elif self.current_phase == LightPhase.YELLOW_A:
+            green_nodes = set()
+            yellow_nodes = set(self.group_a)
+        elif self.current_phase == LightPhase.YELLOW_B:
+            green_nodes = set()
+            yellow_nodes = set(self.group_b)
+        else:
+            green_nodes = set()
+            yellow_nodes = set()
+
+        for from_node in self.connected_nodes:
+            if from_node in green_nodes:
+                color = "green"
+            elif from_node in yellow_nodes:
+                color = "yellow"
+            else:
+                color = "red"
+
+            states.append({
+                "from_node_id": from_node,
+                "node_id": self.node_id,
+                "color": color
+            })
+
+        return states
 
     def publish_status(self):
         payload = {
             "node_id": self.node_id,
             "phase": self.current_phase.value,
+            "color": self.phase_color(),
             "degree": len(self.connected_nodes),
             "connected_nodes": self.connected_nodes,
+            "group_a": self.group_a,
+            "group_b": self.group_b,
             "allowed_movements": self.get_allowed_movements(),
+            "signal_states": self.get_signal_states(),
             "pending_requests": [
                 {
                     "vehicle_id": r["vehicle_id"],
@@ -330,13 +507,17 @@ class TrafficLightManager(Node):
 
         msg = String()
         msg.data = json.dumps(payload)
-
         self.status_pub.publish(msg)
+
+
+# Evito import math completo solo per non cambiare troppo stile del file.
+def math_atan2(y, x):
+    import math
+    return math.atan2(y, x)
 
 
 def main(args=None):
     rclpy.init(args=args)
-
     node = TrafficLightManager()
 
     try:

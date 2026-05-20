@@ -15,7 +15,7 @@
     { "id": "taxi_pickup_5", "x": 0.0, "y": -19.4, "weight": 1.2 },
     { "id": "taxi_pickup_6", "x": -39.4, "y": -10.0, "weight": 0.8 },
     { "id": "taxi_pickup_7", "x": 30.0, "y": -39.4, "weight": 1.0 },
-    { "id": "taxi_pickup_8", "x": -10.0, "y": 20.6, "weight": 1.4 }
+    { "id": "taxi_pickup_8", "x": -20.0, "y": 20.6, "weight": 1.4 }
   ],
   "dropoff_points": [
     { "id": "taxi_dropoff_1", "x": -35.0, "y": 20.6 },
@@ -24,7 +24,7 @@
     { "id": "taxi_dropoff_4", "x": 20.6, "y": -10.0 },
     { "id": "taxi_dropoff_5", "x": -5.0, "y": -39.4 },
     { "id": "taxi_dropoff_6", "x": -19.4, "y": -30.0 },
-    { "id": "taxi_dropoff_7", "x": 0.0, "y": 20.6 },
+    { "id": "taxi_dropoff_7", "x": 20.0, "y": 20.6 },
     { "id": "taxi_dropoff_8", "x": -39.4, "y": 30.0 }
   ]
 }
