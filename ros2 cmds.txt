@@ -6,3 +6,8 @@ rm -rf log
 colcon build --symlink-install
 source ~/AACR/install/setup.bash
 ros2 launch smart_city launch.py 
+
+
+
+
+ros2 run smart_city simulation_report_recorder --ros-args -p duration_sec:=300.0
