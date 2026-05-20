@@ -48,14 +48,14 @@ class NavigationExecutor(Node):
                 ("lookahead_distance", 4.0),
                 ("lane_recovery_threshold", 0.35),
 
-                ("waypoint_tolerance", 0.30),
+                ("waypoint_tolerance", 0.18),
                 ("target_tolerance", 0.45),
 
                 ("lane_width", 2.4),
                 ("lane_offset_ratio", 1.0),
 
                 ("intersection_clearance", 2.2),
-                ("traffic_light_stop_distance", 1.5),
+                ("traffic_light_stop_distance", 35),
 
                 ("obstacle_stop_distance", 3.0),
                 ("obstacle_slow_distance", 5.0),
@@ -388,6 +388,35 @@ class NavigationExecutor(Node):
 
     def cancel_callback(self, goal_handle):
         return CancelResponse.ACCEPT
+    
+    def is_near_red_traffic_light(self):
+        if not self.has_odom:
+            return False
+
+        stop_radius = 6.0
+
+        for node_id, status in self.traffic_light_statuses.items():
+            color = status.get("color")
+
+            if color != "red":
+                continue
+
+            node = self.nodes.get(node_id)
+
+            if node is None:
+                continue
+
+            d = self.distance_xy(
+                self.current_x,
+                self.current_y,
+                float(node["x"]),
+                float(node["y"])
+            )
+
+            if d <= stop_radius:
+                return True
+
+        return False
 
     async def execute_callback(self, goal_handle):
         goal = goal_handle.request
@@ -514,6 +543,16 @@ class NavigationExecutor(Node):
 
                     waypoint_start_time = self.get_clock().now()
                     waypoint_timeout_sec = self.compute_waypoint_timeout(current_wp)
+
+                rate.sleep()
+                continue
+
+            if self.is_near_red_traffic_light():
+                self.stop_vehicle()
+                waypoint_start_time = self.get_clock().now()
+
+                feedback = self.make_feedback(goal)
+                goal_handle.publish_feedback(feedback)
 
                 rate.sleep()
                 continue
@@ -920,16 +959,21 @@ class NavigationExecutor(Node):
     # ============================================================
 
     def must_wait_at_traffic_light(self, current_wp, goal, distance_to_wp):
-        if current_wp.get("kind") != "approach_intersection":
+        intersection_node_id = current_wp.get("node_id")
+
+        if not intersection_node_id:
             return False
 
-        intersection_node_id = current_wp.get("node_id")
+        if intersection_node_id not in self.traffic_light_statuses:
+            return False
+
         from_node_id, to_node_id = self.get_movement_for_intersection(intersection_node_id)
 
-        if not intersection_node_id or not from_node_id:
+        if not from_node_id:
             return False
 
-        if distance_to_wp <= self.traffic_light_stop_distance * 3:
+        # Se sono ancora lontano, chiedo solo priorità.
+        if distance_to_wp <= self.traffic_light_stop_distance * 4.0:
             self.maybe_publish_priority_request(
                 from_node_id,
                 to_node_id,
@@ -937,6 +981,7 @@ class NavigationExecutor(Node):
                 goal.mission_id
             )
 
+        # Zona di stop più ampia.
         if distance_to_wp > self.traffic_light_stop_distance:
             return False
 
@@ -949,14 +994,10 @@ class NavigationExecutor(Node):
         if allowed:
             if self.state == ExecutorState.WAITING_TRAFFIC_LIGHT:
                 self.state = ExecutorState.NAVIGATING
-                self.log_navigation_snapshot(
-                    f"semaforo {intersection_node_id} verde: riparto",
-                    current_wp,
-                    distance_to_wp,
-                    force=True
-                )
-
             return False
+
+        self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
+        return True
 
         if self.state != ExecutorState.WAITING_TRAFFIC_LIGHT:
             self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
