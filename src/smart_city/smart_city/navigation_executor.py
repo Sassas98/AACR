@@ -393,7 +393,7 @@ class NavigationExecutor(Node):
         if not self.has_odom:
             return False
 
-        stop_radius = 6.0
+        stop_radius = 3.0
 
         for node_id, status in self.traffic_light_statuses.items():
             color = status.get("color")

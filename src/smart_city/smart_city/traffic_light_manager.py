@@ -48,7 +48,7 @@ class TrafficLightManager(Node):
         # Parametri usati dal tuo launch attuale
         self.declare_parameter("green_duration", 320.0)
         self.declare_parameter("yellow_duration", 80.0)
-        self.declare_parameter("all_red_duration", 80.0)
+        self.declare_parameter("all_red_duration", 25.0)
         self.declare_parameter("min_green_duration", 160.0)
         self.declare_parameter("max_green_duration", 640.0)
 
