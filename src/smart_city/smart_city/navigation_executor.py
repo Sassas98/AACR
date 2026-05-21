@@ -133,6 +133,8 @@ class NavigationExecutor(Node):
         # Semafori
         self.traffic_light_statuses = {}
         self.last_priority_request_time = {}
+        self.committed_traffic_lights = {}
+        self.traffic_light_commit_ttl_sec = 20.0
 
         # Mappa
         self.nodes = {}
@@ -835,17 +837,41 @@ class NavigationExecutor(Node):
     # SEMAFORI
     # ============================================================
 
+    def cleanup_committed_traffic_lights(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+
+        expired = [
+            node_id
+            for node_id, expire_at in self.committed_traffic_lights.items()
+            if expire_at <= now
+        ]
+
+        for node_id in expired:
+            del self.committed_traffic_lights[node_id]
+
+
+    def commit_traffic_light(self, node_id):
+        if not node_id:
+            return
+
+        expire_at = (
+            self.get_clock().now().nanoseconds / 1e9
+            + self.traffic_light_commit_ttl_sec
+        )
+
+        self.committed_traffic_lights[node_id] = expire_at
+
     def must_wait_at_traffic_light(self, current_wp, goal, distance_to_wp):
         """
-        Nuova logica semaforo ad assi.
+        Nuova logica semaforo ad assi + commit.
 
-        Il traffic_light_manager pubblica signal_states per ramo:
-        - from_node_id verde: puoi entrare nell'incrocio da quel ramo;
-        - from_node_id giallo/rosso: devi fermarti.
-
-        Qui non guardo più il colore globale dell'incrocio.
-        Guardo solo il ramo da cui sto arrivando.
+        Se un veicolo ha già ottenuto verde su un incrocio ed è abbastanza vicino,
+        lo marca come "committed": da quel momento non rivaluta più quel semaforo
+        per alcuni secondi. Serve a evitare che si fermi mille volte mentre sta già
+        attraversando l'incrocio.
         """
+        self.cleanup_committed_traffic_lights()
+
         if current_wp.get("kind") != "approach_intersection":
             return False
 
@@ -856,14 +882,17 @@ class NavigationExecutor(Node):
         if not intersection_node_id:
             return False
 
+        if intersection_node_id in self.committed_traffic_lights:
+            return False
+
         if not from_node_id:
-            from_node_id, to_node_id = self.get_movement_for_intersection(intersection_node_id)
+            from_node_id, to_node_id = self.get_movement_for_intersection(
+                intersection_node_id
+            )
 
         if not from_node_id:
             return False
 
-        # Se il nodo non ha status, non blocco la simulazione.
-        # Vuol dire che quel nodo non è semaforizzato o il manager non è partito.
         if intersection_node_id not in self.traffic_light_statuses:
             return False
 
@@ -876,7 +905,7 @@ class NavigationExecutor(Node):
                 goal.mission_id
             )
 
-        # Mi fermo prima dell'incrocio, non al centro.
+        # Se sono ancora lontano, non mi fermo.
         if distance_to_wp > self.traffic_light_stop_distance:
             return False
 
@@ -887,27 +916,14 @@ class NavigationExecutor(Node):
         )
 
         if color == "green":
+            self.commit_traffic_light(intersection_node_id)
+
             if self.state == ExecutorState.WAITING_TRAFFIC_LIGHT:
                 self.state = ExecutorState.NAVIGATING
-                self.log_navigation_snapshot(
-                    f"semaforo {intersection_node_id} verde per ramo {from_node_id}: riparto",
-                    current_wp,
-                    distance_to_wp,
-                    force=True
-                )
 
             return False
 
-        if self.state != ExecutorState.WAITING_TRAFFIC_LIGHT:
-            self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
-            self.log_navigation_snapshot(
-                f"fermo al semaforo {intersection_node_id}: "
-                f"ramo {from_node_id} color={color}",
-                current_wp,
-                distance_to_wp,
-                force=True
-            )
-
+        self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
         return True
 
     def maybe_publish_priority_request(self, from_node_id, to_node_id, intersection_node_id, mission_id):

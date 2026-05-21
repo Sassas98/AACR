@@ -45,11 +45,11 @@ class TrafficLightManager(Node):
         self.declare_parameter("node_id", "n2")
         self.declare_parameter("map_config_file", "config/city_map.json")
 
-        self.declare_parameter("green_duration", 60.0)
+        self.declare_parameter("green_duration", 120.0)
         self.declare_parameter("yellow_duration", 10.0)
         self.declare_parameter("red_duration", 30.0)
         self.declare_parameter("priority_red_reduction_sec", 20.0)
-        self.declare_parameter("priority_request_ttl_sec", 50.0)
+        self.declare_parameter("priority_request_ttl_sec", 30.0)
 
         self.node_id = str(self.get_parameter("node_id").value)
         self.map_config_file = self.get_parameter("map_config_file").value
