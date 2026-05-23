@@ -5,7 +5,7 @@ rm -rf install
 rm -rf log
 colcon build --symlink-install
 source ~/AACR/install/setup.bash
-ros2 launch smart_city launch.py 
+ros2 launch smart_city launch_2.py 
 
 
 
