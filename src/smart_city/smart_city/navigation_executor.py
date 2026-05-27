@@ -284,13 +284,20 @@ class NavigationExecutor(Node):
         fov_rad = math.radians(self.obstacle_fov_deg / 2.0)
         min_dist = float("inf")
 
+        # Nel tuo modello il verso di movimento "avanti" corrisponde
+        # ad angolo ±pi nel LaserScan, non a 0.
+        scan_forward_angle = math.pi
+
         angle = msg.angle_min
 
         for r in msg.ranges:
-            if msg.range_min <= r <= msg.range_max:
+            if msg.range_min <= r <= msg.range_max and math.isfinite(r):
                 normalized = self.normalize_angle(angle)
 
-                if abs(normalized) <= fov_rad:
+                # distanza angolare rispetto al "davanti" reale del movimento
+                delta = self.normalize_angle(normalized - scan_forward_angle)
+
+                if abs(delta) <= fov_rad:
                     min_dist = min(min_dist, r)
 
             angle += msg.angle_increment
