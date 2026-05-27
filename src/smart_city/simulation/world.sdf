@@ -7549,12 +7549,12 @@
       <pose>-39.400 35.000 0.28 0 0 -1.5700</pose>
       <link name="base_link">
         <inertial>
-          <pose>0 0 0.30 0 0 0</pose>
-          <mass>120</mass>
+          <pose>0 0 0.22 0 0 0</pose>
+          <mass>3500</mass>
           <inertia>
-            <ixx>25</ixx>
-            <iyy>140</iyy>
-            <izz>160</izz>
+            <ixx>825</ixx>
+            <iyy>4500</iyy>
+            <izz>4750</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -7567,6 +7567,28 @@
               <size>3.8 1.35 1.0</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="body_visual">
           <pose>0 0 0.60 0 0 0</pose>
@@ -7612,6 +7634,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -7635,6 +7679,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -7659,8 +7725,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.8</damping>
-            <friction>0.2</friction>
+            <damping>3</damping>
+            <friction>1</friction>
           </dynamics>
         </axis>
       </joint>
@@ -7674,8 +7740,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.8</damping>
-            <friction>0.2</friction>
+            <damping>3</damping>
+            <friction>1</friction>
           </dynamics>
         </axis>
       </joint>
@@ -7691,18 +7757,18 @@
         <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
       <plugin filename="libmodel_world_pose_publisher.so" name="smart_city::ModelWorldPosePublisher">
-    </plugin>
+      </plugin>
     </model>
     <model name="bus_2">
       <pose>-39.400 15.000 0.28 0 0 -1.5700</pose>
       <link name="base_link">
         <inertial>
-          <pose>0 0 0.30 0 0 0</pose>
-          <mass>120</mass>
+          <pose>0 0 0.22 0 0 0</pose>
+          <mass>3500</mass>
           <inertia>
-            <ixx>25</ixx>
-            <iyy>140</iyy>
-            <izz>160</izz>
+            <ixx>825</ixx>
+            <iyy>4500</iyy>
+            <izz>4750</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -7715,6 +7781,28 @@
               <size>3.8 1.35 1.0</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="body_visual">
           <pose>0 0 0.975 0 0 0</pose>
@@ -7760,6 +7848,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -7783,6 +7893,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -7807,8 +7939,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.8</damping>
-            <friction>0.2</friction>
+            <damping>3</damping>
+            <friction>1</friction>
           </dynamics>
         </axis>
       </joint>
@@ -7822,8 +7954,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.8</damping>
-            <friction>0.2</friction>
+            <damping>3</damping>
+            <friction>1</friction>
           </dynamics>
         </axis>
       </joint>
@@ -7839,18 +7971,18 @@
         <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
       <plugin filename="libmodel_world_pose_publisher.so" name="smart_city::ModelWorldPosePublisher">
-    </plugin>
+      </plugin>
     </model>
     <model name="bus_3">
       <pose>-39.400 -25.000 0.28 0 0 -1.5700</pose>
       <link name="base_link">
         <inertial>
-          <pose>0 0 0.30 0 0 0</pose>
-          <mass>120</mass>
+          <pose>0 0 0.22 0 0 0</pose>
+          <mass>3500</mass>
           <inertia>
-            <ixx>25</ixx>
-            <iyy>140</iyy>
-            <izz>160</izz>
+            <ixx>825</ixx>
+            <iyy>4500</iyy>
+            <izz>4750</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -7863,6 +7995,28 @@
               <size>3.8 1.35 1.0</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="body_visual">
           <pose>0 0 0.975 0 0 0</pose>
@@ -7908,6 +8062,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -7931,6 +8107,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1500000</kp>
+                <kd>30000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -7955,8 +8153,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.8</damping>
-            <friction>0.2</friction>
+            <damping>3</damping>
+            <friction>1</friction>
           </dynamics>
         </axis>
       </joint>
@@ -7970,8 +8168,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.8</damping>
-            <friction>0.2</friction>
+            <damping>3</damping>
+            <friction>1</friction>
           </dynamics>
         </axis>
       </joint>
@@ -7987,17 +8185,18 @@
         <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
       <plugin filename="libmodel_world_pose_publisher.so" name="smart_city::ModelWorldPosePublisher">
-    </plugin>
+      </plugin>
     </model>
     <model name="taxi_1">
       <pose>35.000 -39.400 0.28 0 0 3.1400</pose>
       <link name="base_link">
         <inertial>
-          <mass>6</mass>
+          <pose>0 0 0.18 0 0 0</pose>
+          <mass>1200</mass>
           <inertia>
-            <ixx>1</ixx>
-            <iyy>1</iyy>
-            <izz>1</izz>
+            <ixx>190</ixx>
+            <iyy>635</iyy>
+            <izz>710</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -8010,6 +8209,28 @@
               <size>2.4 1.15 0.75</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="body_visual">
           <pose>0 0 0.48 0 0 0</pose>
@@ -8055,6 +8276,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -8078,6 +8321,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -8102,8 +8367,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.6</damping>
-            <friction>0.15</friction>
+            <damping>2.5</damping>
+            <friction>0.8</friction>
           </dynamics>
         </axis>
       </joint>
@@ -8117,8 +8382,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.6</damping>
-            <friction>0.15</friction>
+            <damping>2.5</damping>
+            <friction>0.8</friction>
           </dynamics>
         </axis>
       </joint>
@@ -8134,17 +8399,18 @@
         <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
       <plugin filename="libmodel_world_pose_publisher.so" name="smart_city::ModelWorldPosePublisher">
-    </plugin>
+      </plugin>
     </model>
     <model name="taxi_2">
       <pose>15.000 -39.400 0.28 0 0 3.1400</pose>
       <link name="base_link">
         <inertial>
-          <mass>6</mass>
+          <pose>0 0 0.18 0 0 0</pose>
+          <mass>1200</mass>
           <inertia>
-            <ixx>1</ixx>
-            <iyy>1</iyy>
-            <izz>1</izz>
+            <ixx>190</ixx>
+            <iyy>635</iyy>
+            <izz>710</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -8157,6 +8423,28 @@
               <size>2.4 1.15 0.75</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="body_visual">
           <pose>0 0 0.48 0 0 0</pose>
@@ -8202,6 +8490,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -8225,6 +8535,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -8249,8 +8581,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.6</damping>
-            <friction>0.15</friction>
+            <damping>2.5</damping>
+            <friction>0.8</friction>
           </dynamics>
         </axis>
       </joint>
@@ -8264,8 +8596,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.6</damping>
-            <friction>0.15</friction>
+            <damping>2.5</damping>
+            <friction>0.8</friction>
           </dynamics>
         </axis>
       </joint>
@@ -8281,17 +8613,18 @@
         <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
       <plugin filename="libmodel_world_pose_publisher.so" name="smart_city::ModelWorldPosePublisher">
-    </plugin>
+      </plugin>
     </model>
     <model name="taxi_3">
       <pose>-5.000 -39.400 0.28 0 0 3.1400</pose>
       <link name="base_link">
         <inertial>
-          <mass>6</mass>
+          <pose>0 0 0.18 0 0 0</pose>
+          <mass>1200</mass>
           <inertia>
-            <ixx>1</ixx>
-            <iyy>1</iyy>
-            <izz>1</izz>
+            <ixx>190</ixx>
+            <iyy>635</iyy>
+            <izz>710</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -8304,6 +8637,28 @@
               <size>2.4 1.15 0.75</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="body_visual">
           <pose>0 0 0.48 0 0 0</pose>
@@ -8349,6 +8704,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -8372,6 +8749,28 @@
               <length>0.16</length>
             </cylinder>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>4.0</mu>
+                <mu2>4.0</mu2>
+                <slip1>0.0</slip1>
+                <slip2>0.0</slip2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1200000</kp>
+                <kd>24000</kd>
+                <max_vel>0.05</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+            <bounce>
+              <restitution_coefficient>0.0</restitution_coefficient>
+              <threshold>100000.0</threshold>
+            </bounce>
+          </surface>
         </collision>
         <visual name="visual">
           <geometry>
@@ -8396,8 +8795,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.6</damping>
-            <friction>0.15</friction>
+            <damping>2.5</damping>
+            <friction>0.8</friction>
           </dynamics>
         </axis>
       </joint>
@@ -8411,8 +8810,8 @@
             <upper>1e16</upper>
           </limit>
           <dynamics>
-            <damping>0.6</damping>
-            <friction>0.15</friction>
+            <damping>2.5</damping>
+            <friction>0.8</friction>
           </dynamics>
         </axis>
       </joint>
@@ -8428,7 +8827,7 @@
         <odom_publish_frequency>30</odom_publish_frequency>
       </plugin>
       <plugin filename="libmodel_world_pose_publisher.so" name="smart_city::ModelWorldPosePublisher">
-    </plugin>
+      </plugin>
     </model>
 
     <!-- Connector plates added back at broken intermediate nodes, without restoring removed roads or traffic lights. -->
