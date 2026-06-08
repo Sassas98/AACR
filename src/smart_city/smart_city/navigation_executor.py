@@ -23,6 +23,7 @@ class ExecutorState(Enum):
     WAITING_TRAFFIC_LIGHT = "WAITING_TRAFFIC_LIGHT"
     OBSTACLE_STOP = "OBSTACLE_STOP"
     RECALCULATING = "RECALCULATING"
+    STUCK_RECOVERY = "STUCK_RECOVERY"
 
 
 class NavigationExecutor(Node):
@@ -61,9 +62,22 @@ class NavigationExecutor(Node):
                 ("obstacle_slow_distance", 5.0),
                 ("obstacle_fov_deg", 60.0),
                 ("obstacle_replan_timeout_sec", 15.0),
+                ("obstruction_reverse_sec", 1.15),
+                ("obstruction_turn_sec", 0.85),
+                ("obstruction_reverse_speed", -0.35),
+                ("obstruction_turn_speed", 0.65),
+                ("obstruction_block_next_edge", True),
+                ("soft_avoidance_enabled", True),
 
                 ("diagnostic_log_period_sec", 1.0),
                 ("path_log_enabled", True),
+
+                # Diagnostica / sicurezza
+                ("traffic_light_wait_timeout_sec", 35.0),
+                ("stuck_timeout_sec", 8.0),
+                ("stuck_progress_epsilon", 0.12),
+                ("alert_log_period_sec", 2.0),
+                ("enable_recovery_maneuver", True),
             ]
         )
 
@@ -91,9 +105,21 @@ class NavigationExecutor(Node):
         self.obstacle_slow_distance = float(self.get_parameter("obstacle_slow_distance").value)
         self.obstacle_fov_deg = float(self.get_parameter("obstacle_fov_deg").value)
         self.obstacle_replan_timeout_sec = float(self.get_parameter("obstacle_replan_timeout_sec").value)
+        self.obstruction_reverse_sec = float(self.get_parameter("obstruction_reverse_sec").value)
+        self.obstruction_turn_sec = float(self.get_parameter("obstruction_turn_sec").value)
+        self.obstruction_reverse_speed = float(self.get_parameter("obstruction_reverse_speed").value)
+        self.obstruction_turn_speed = float(self.get_parameter("obstruction_turn_speed").value)
+        self.obstruction_block_next_edge = bool(self.get_parameter("obstruction_block_next_edge").value)
+        self.soft_avoidance_enabled = bool(self.get_parameter("soft_avoidance_enabled").value)
 
         self.diagnostic_log_period_sec = float(self.get_parameter("diagnostic_log_period_sec").value)
         self.path_log_enabled = bool(self.get_parameter("path_log_enabled").value)
+
+        self.traffic_light_wait_timeout_sec = float(self.get_parameter("traffic_light_wait_timeout_sec").value)
+        self.stuck_timeout_sec = float(self.get_parameter("stuck_timeout_sec").value)
+        self.stuck_progress_epsilon = float(self.get_parameter("stuck_progress_epsilon").value)
+        self.alert_log_period_sec = float(self.get_parameter("alert_log_period_sec").value)
+        self.enable_recovery_maneuver = bool(self.get_parameter("enable_recovery_maneuver").value)
 
         # Stato veicolo
         self.state = ExecutorState.IDLE
@@ -104,8 +130,13 @@ class NavigationExecutor(Node):
 
         # Sensori
         self.obstacle_min_distance = float("inf")
+        self.obstacle_bearing = 0.0
+        self.obstacle_left_min_distance = float("inf")
+        self.obstacle_right_min_distance = float("inf")
         self.last_scan_stamp = None
         self.obstacle_stop_start_time = None
+        self.obstruction_attempt_count = 0
+        self.last_obstruction_replan_time = 0.0
 
         self.other_vehicles = {}
         self.vehicle_state_publish_period_sec = 0.2
@@ -133,6 +164,7 @@ class NavigationExecutor(Node):
         # Semafori
         self.traffic_light_statuses = {}
         self.last_priority_request_time = {}
+        self.traffic_light_wait_started_at = {}
         self.committed_traffic_lights = {}
         self.traffic_light_commit_ttl_sec = 20.0
 
@@ -152,13 +184,19 @@ class NavigationExecutor(Node):
         self.current_mission_id = ""
 
         self.last_diag_time = self.get_clock().now()
+        self.last_alert_time_by_key = {}
+        self.last_progress_distance = None
+        self.last_progress_time = self.get_clock().now()
+        self.last_recovery_time = 0.0
 
         self.load_map()
+        self.validate_runtime_parameters()
 
         # ROS
         self.callback_group = ReentrantCallbackGroup()
 
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel", 10)
+        self.alert_pub = self.create_publisher(String, "navigation_alerts", 20)
 
         self.pose_sub = self.create_subscription(
             PoseStamped,
@@ -283,6 +321,9 @@ class NavigationExecutor(Node):
 
         fov_rad = math.radians(self.obstacle_fov_deg / 2.0)
         min_dist = float("inf")
+        min_bearing = 0.0
+        left_min = float("inf")
+        right_min = float("inf")
 
         # Nel tuo modello il verso di movimento "avanti" corrisponde
         # ad angolo ±pi nel LaserScan, non a 0.
@@ -293,17 +334,23 @@ class NavigationExecutor(Node):
         for r in msg.ranges:
             if msg.range_min <= r <= msg.range_max and math.isfinite(r):
                 normalized = self.normalize_angle(angle)
-
-                # distanza angolare rispetto al "davanti" reale del movimento
                 delta = self.normalize_angle(normalized - scan_forward_angle)
 
                 if abs(delta) <= fov_rad:
-                    min_dist = min(min_dist, r)
+                    if r < min_dist:
+                        min_dist = r
+                        min_bearing = delta
+                    if delta >= 0.0:
+                        left_min = min(left_min, r)
+                    else:
+                        right_min = min(right_min, r)
 
             angle += msg.angle_increment
 
         self.obstacle_min_distance = min_dist
-
+        self.obstacle_bearing = min_bearing
+        self.obstacle_left_min_distance = left_min
+        self.obstacle_right_min_distance = right_min
     def publish_vehicle_state(self):
         if not self.has_odom:
             return
@@ -384,6 +431,8 @@ class NavigationExecutor(Node):
 
         rate = self.create_rate(20)
         waypoint_start_time = self.get_clock().now()
+        self.last_progress_time = waypoint_start_time
+        self.last_progress_distance = None
         waypoint_timeout_sec = self.compute_waypoint_timeout(self.current_path[0])
 
         while rclpy.ok():
@@ -440,17 +489,52 @@ class NavigationExecutor(Node):
 
             is_last = self.current_waypoint_index == len(self.current_path) - 1
             tolerance = self.target_tolerance if is_last else self.waypoint_tolerance
+            if current_wp.get("kind") == "start_lane_projection":
+                tolerance = max(tolerance, 0.60)
+            elif current_wp.get("kind") in ("intersection_corner", "exit_intersection"):
+                tolerance = max(tolerance, 0.45)
 
             if distance_to_wp <= tolerance:
                 self.log_navigation_snapshot("waypoint raggiunto", current_wp, distance_to_wp, force=True)
 
                 self.current_waypoint_index += 1
+                self.traffic_light_wait_started_at.clear()
                 waypoint_start_time = self.get_clock().now()
+                self.last_progress_time = waypoint_start_time
+                self.last_progress_distance = None
 
                 if self.current_waypoint_index < len(self.current_path):
                     waypoint_timeout_sec = self.compute_waypoint_timeout(
                         self.current_path[self.current_waypoint_index]
                     )
+
+                rate.sleep()
+                continue
+
+
+            self.update_progress_watchdog(distance_to_wp)
+
+            if self.is_stuck_without_reason(distance_to_wp):
+                self.alert(
+                    "STUCK",
+                    f"possibile loop/stallo: wp={self.current_waypoint_index + 1}/{len(self.current_path)}, "
+                    f"dist={distance_to_wp:.2f}m, obstacle={self.obstacle_min_distance:.2f}m, state={self.state.value}",
+                    throttle=True
+                )
+                self.stop_vehicle()
+
+                if self.enable_recovery_maneuver:
+                    self.run_recovery_maneuver()
+
+                # Importante: uno stallo senza ostacolo NON deve bloccare una strada.
+                # Nei tuoi log questo produceva catene tipo e38,e4,e8 e poi "nessun path trovato".
+                if self.obstacle_min_distance <= self.obstacle_slow_distance:
+                    self.mark_obstructed_road_ahead(current_wp)
+                    self.replan_after_obstacle(goal)
+
+                waypoint_start_time = self.get_clock().now()
+                self.last_progress_time = waypoint_start_time
+                self.last_progress_distance = None
 
                 rate.sleep()
                 continue
@@ -467,7 +551,8 @@ class NavigationExecutor(Node):
                     )
 
                     self.stop_vehicle()
-                    self.mark_current_road_blocked(current_wp)
+                    self.perform_obstruction_escape_maneuver(current_wp)
+                    self.mark_obstructed_road_ahead(current_wp)
                     self.replan_after_obstacle(goal)
 
                 else:
@@ -737,17 +822,32 @@ class NavigationExecutor(Node):
         return min(lidar_factor, vehicle_factor)
 
     def handle_obstacle_stop(self, goal, current_wp):
+        """
+        Gestione ostacolo più "stradale":
+        1) stop breve, perché l'ostacolo potrebbe essere un veicolo che riparte;
+        2) se persiste, lo considero ostruzione della corsia/edge corrente;
+        3) indietreggio e mi disallineo leggermente;
+        4) blocco temporaneamente l'edge davanti;
+        5) ricalcolo una rotta alternativa dalla nuova posa.
+        """
         now = self.get_clock().now()
+        now_sec = now.nanoseconds / 1e9
 
         if self.obstacle_stop_start_time is None:
             self.obstacle_stop_start_time = now
+            self.obstruction_attempt_count = 0
 
         stopped_for = (now - self.obstacle_stop_start_time).nanoseconds / 1e9
 
         if self.state != ExecutorState.OBSTACLE_STOP:
             self.state = ExecutorState.OBSTACLE_STOP
+            self.alert(
+                "OBSTACLE_STOP",
+                f"ostacolo davanti a {self.obstacle_min_distance:.2f} m: stop controllato",
+                throttle=True
+            )
             self.log_navigation_snapshot(
-                f"ostacolo davanti a {self.obstacle_min_distance:.2f} m: stop",
+                f"ostacolo davanti a {self.obstacle_min_distance:.2f} m: stop controllato",
                 current_wp,
                 None,
                 force=True
@@ -755,22 +855,115 @@ class NavigationExecutor(Node):
 
         self.stop_vehicle()
 
+        # Aspetto prima di dichiarare la strada ostruita.
         if stopped_for < self.obstacle_replan_timeout_sec:
             return False
 
+        # Evita ricalcoli a raffica sullo stesso ostacolo.
+        if now_sec - self.last_obstruction_replan_time < 2.0:
+            return False
+        self.last_obstruction_replan_time = now_sec
+        self.obstruction_attempt_count += 1
+
+        self.alert(
+            "ROAD_OBSTRUCTED",
+            f"ostacolo persistente da {stopped_for:.1f}s: dichiaro edge ostruito e preparo manovra",
+            throttle=False
+        )
         self.log_navigation_snapshot(
-            f"ostacolo persistente da {stopped_for:.1f}s: blocco strada e ricalcolo",
+            f"ostacolo persistente da {stopped_for:.1f}s: edge ostruito + manovra + ricalcolo",
             current_wp,
             None,
             force=True
         )
 
-        self.mark_current_road_blocked(current_wp)
+        self.perform_obstruction_escape_maneuver(current_wp)
+        self.mark_obstructed_road_ahead(current_wp)
         self.replan_after_obstacle(goal)
 
         self.obstacle_stop_start_time = None
         return True
-    
+
+    def perform_obstruction_escape_maneuver(self, current_wp):
+        """Indietreggia e sterza verso il lato con più spazio prima del replan."""
+        if not self.enable_recovery_maneuver:
+            return
+
+        # Se l'ostacolo è più a sinistra, sterzo a destra; se è più a destra, sterzo a sinistra.
+        # In caso di dubbio preferisco la destra, coerente con guida a destra.
+        left_clear = self.obstacle_left_min_distance
+        right_clear = self.obstacle_right_min_distance
+        if math.isfinite(left_clear) or math.isfinite(right_clear):
+            turn_sign = -1.0 if right_clear >= left_clear else 1.0
+        else:
+            turn_sign = -1.0 if self.obstacle_bearing >= 0.0 else 1.0
+
+        self.alert(
+            "OBSTRUCTION_MANEUVER",
+            f"manovra disostruzione: retromarcia {self.obstruction_reverse_sec:.1f}s + sterzo {'dx' if turn_sign < 0 else 'sx'}",
+            throttle=False
+        )
+
+        cmd = Twist()
+        end_reverse = self.get_clock().now().nanoseconds / 1e9 + self.obstruction_reverse_sec
+        while rclpy.ok() and self.get_clock().now().nanoseconds / 1e9 < end_reverse:
+            cmd.linear.x = self.obstruction_reverse_speed
+            cmd.angular.z = turn_sign * self.obstruction_turn_speed * 0.55
+            self.cmd_vel_pub.publish(cmd)
+
+        self.stop_vehicle()
+
+        end_turn = self.get_clock().now().nanoseconds / 1e9 + self.obstruction_turn_sec
+        while rclpy.ok() and self.get_clock().now().nanoseconds / 1e9 < end_turn:
+            cmd.linear.x = 0.05
+            cmd.angular.z = turn_sign * self.obstruction_turn_speed
+            self.cmd_vel_pub.publish(cmd)
+
+        self.stop_vehicle()
+
+    def mark_obstructed_road_ahead(self, current_wp):
+        """
+        Blocca solo l'edge realmente davanti al veicolo, evitando di bloccare tre strade
+        diverse solo perché la proiezione di corsia è ambigua vicino agli incroci.
+        """
+        edge_ids = []
+
+        wp_edge = current_wp.get("edge_id") if current_wp else None
+        if wp_edge:
+            edge_ids.append(wp_edge)
+
+        # Se sono in un incrocio o sto entrando in un incrocio, può essere ostruito anche
+        # il prossimo edge in uscita. Lo blocco solo quando è esplicitamente nel waypoint.
+        if self.obstruction_block_next_edge and current_wp:
+            from_node = current_wp.get("node_id")
+            to_node = current_wp.get("to_node_id")
+            if from_node and to_node and from_node != to_node:
+                try:
+                    next_edge = self.get_edge_between(from_node, to_node)
+                    edge_ids.append(next_edge["id"])
+                except Exception:
+                    pass
+
+        # Fallback: edge più vicino, ma solo se sono davvero vicino alla sua corsia.
+        if not edge_ids:
+            try:
+                lane_projection = self.find_nearest_lane_projection(
+                    self.current_x,
+                    self.current_y,
+                    allow_blocked=True
+                )
+                if lane_projection and lane_projection.get("distance", 999.0) < self.lane_width * 1.2:
+                    edge_ids.append(lane_projection["edge"]["id"])
+            except Exception as ex:
+                self.log_navigation_event(f"impossibile localizzare edge ostruito: {ex}")
+
+        for edge_id in sorted(set(edge_ids)):
+            self.block_edge_temporarily(edge_id)
+
+        self.log_navigation_event(
+            "strade bloccate per ostruzione: " + ", ".join(sorted(self.blocked_edges))
+        )
+
     def block_edge_temporarily(self, edge_id):
         if not edge_id:
             return
@@ -839,6 +1032,7 @@ class NavigationExecutor(Node):
             self.stop_vehicle()
             self.state = ExecutorState.OBSTACLE_STOP
             self.log_navigation_event(f"ricalcolo fallito: {ex}")
+            self.alert("REPLAN_FAILED", f"ricalcolo fallito: {ex}", throttle=True)
 
     # ============================================================
     # SEMAFORI
@@ -901,6 +1095,11 @@ class NavigationExecutor(Node):
             return False
 
         if intersection_node_id not in self.traffic_light_statuses:
+            self.alert(
+                "TRAFFIC_LIGHT_NO_STATUS",
+                f"nessuno status ricevuto per semaforo {intersection_node_id}; procedo in fallback green",
+                throttle=True
+            )
             return False
 
         # Chiedo priorità con largo anticipo.
@@ -928,6 +1127,32 @@ class NavigationExecutor(Node):
             if self.state == ExecutorState.WAITING_TRAFFIC_LIGHT:
                 self.state = ExecutorState.NAVIGATING
 
+            return False
+
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        started = self.traffic_light_wait_started_at.get(intersection_node_id)
+
+        if started is None:
+            self.traffic_light_wait_started_at[intersection_node_id] = now_sec
+            started = now_sec
+            self.alert(
+                "TRAFFIC_LIGHT_WAIT",
+                f"stop al semaforo {intersection_node_id}: colore={color}, movimento={from_node_id}->{intersection_node_id}->{to_node_id}",
+                throttle=True
+            )
+
+        waited = now_sec - started
+
+        if waited > self.traffic_light_wait_timeout_sec:
+            self.alert(
+                "TRAFFIC_LIGHT_STUCK",
+                f"attesa semaforo {intersection_node_id} da {waited:.1f}s: richiedo priorità e libero commit temporaneo",
+                throttle=True
+            )
+            self.maybe_publish_priority_request(from_node_id, to_node_id, intersection_node_id, goal.mission_id)
+            # In simulazione evita intrappolamenti permanenti se il controller semaforico non risponde.
+            self.commit_traffic_light(intersection_node_id)
+            self.state = ExecutorState.NAVIGATING
             return False
 
         self.state = ExecutorState.WAITING_TRAFFIC_LIGHT
@@ -1505,17 +1730,15 @@ class NavigationExecutor(Node):
 
     def get_vehicle_avoidance_target(self):
         """
-        Decide cosa fare rispetto agli altri veicoli.
-
-        Ritorna:
-        - None: nessun rischio utile
-        - {"type": "STOP", ...}: veicolo che attraversa / incrocio occupato
-        - {"type": "AVOID_RIGHT", "x": ..., "y": ...}: quasi frontale, schiva dolcemente a destra
-
-        Nota importante:
-        la schivata NON si usa per veicoli perpendicolari. Per quelli ci si ferma.
+        Gestione veicoli più stradale.
+        - stessa direzione: accodamento, niente schivata;
+        - incrocio/perpendicolare: precedenza/stop, niente slalom;
+        - frontale reale: piccola schivata laterale solo se abilitata e solo a bassa entità.
         """
         if not self.has_odom:
+            return None
+
+        if not self.soft_avoidance_enabled:
             return None
 
         now = self.get_clock().now().nanoseconds / 1e9
@@ -1544,86 +1767,54 @@ class NavigationExecutor(Node):
             dy = other_y - self.current_y
 
             euclidean_dist = math.sqrt(dx * dx + dy * dy)
-
             forward_dist = dx * forward_x + dy * forward_y
-            side_dist = -forward_y * dx + forward_x * dy
+            side_dist = dx * right_x + dy * right_y
 
-            # Non reagire a roba chiaramente dietro, salvo emergenza quasi fisica.
-            if forward_dist < -0.75 and euclidean_dist > 1.6:
+            if forward_dist < -0.75 and euclidean_dist > 1.8:
                 continue
 
             heading_diff = abs(self.normalize_angle(other_yaw - self.current_yaw))
-
             same_direction = heading_diff < math.radians(45)
             opposite_direction = heading_diff > math.radians(160)
             crossing_direction = not same_direction and not opposite_direction
 
-            other_forward_x = math.cos(other_yaw)
-            other_forward_y = math.sin(other_yaw)
+            # Chi ha score più alto cede: regola deterministica per evitare deadlock.
+            my_priority_score = self.current_x + self.current_y
+            other_priority_score = other_x + other_y
+            i_must_yield = my_priority_score > other_priority_score
 
-            # TTC semplificato.
-            # Approssimo velocità uguali: conta se le direzioni ci stanno chiudendo la distanza.
-            relative_vx = other_forward_x - forward_x
-            relative_vy = other_forward_y - forward_y
+            if same_direction:
+                continue
 
-            closing_speed = -((dx * relative_vx) + (dy * relative_vy))
-
-            if euclidean_dist > 0.001 and closing_speed > 0.0:
-                time_to_conflict = euclidean_dist / closing_speed
-            else:
-                time_to_conflict = float("inf")
-
-            # 1) Veicolo perpendicolare / diagonale davanti:
-            # non schivare. Se sta attraversando la mia zona, stop.
             if crossing_direction:
                 crossing_risk = (
-                    -0.3 < forward_dist < 6.0
-                    and abs(side_dist) < 3.0
-                    and (
-                        closing_speed > 0.15
-                        or euclidean_dist < 3.0
-                    )
+                    -0.5 < forward_dist < 7.0
+                    and abs(side_dist) < 4.0
+                    and euclidean_dist < 8.5
                 )
-
-                if crossing_risk:
+                if crossing_risk and i_must_yield:
                     score = max(0.0, forward_dist) + abs(side_dist) * 0.35
                     if score < best_stop_score:
                         best_stop_score = score
                         best_stop = {
                             "type": "STOP",
-                            "reason": "crossing_vehicle",
+                            "reason": "crossing_vehicle_yield",
                             "vehicle_id": vehicle_id,
                             "forward_dist": forward_dist,
                             "side_dist": side_dist,
                             "euclidean_dist": euclidean_dist,
                             "heading_diff": heading_diff,
-                            "closing_speed": closing_speed,
-                            "time_to_conflict": time_to_conflict,
                         }
-
                 continue
 
-            # 2) Veicolo stessa direzione:
-            # niente avoidance laterale. Lo gestisce get_vehicle_proximity_factor().
-            if same_direction:
-                continue
-
-            # 3) Quasi frontale:
-            # schiva solo se è davvero nella mia corsia/mezzeria, non se è di traverso nell'incrocio.
             frontal_risk = (
                 opposite_direction
-                and 1.0 < forward_dist < 8.5
-                and abs(side_dist) < 1.25
-                and (
-                    closing_speed > 0.1
-                    or time_to_conflict < 6.0
-                )
+                and 1.0 < forward_dist < 7.0
+                and abs(side_dist) < 1.15
+                and euclidean_dist < 8.0
             )
 
-            if not frontal_risk:
-                continue
-
-            if forward_dist < best_avoid_forward:
+            if frontal_risk and forward_dist < best_avoid_forward:
                 best_avoid_forward = forward_dist
                 best_avoid = {
                     "vehicle_id": vehicle_id,
@@ -1631,22 +1822,16 @@ class NavigationExecutor(Node):
                     "side_dist": side_dist,
                     "euclidean_dist": euclidean_dist,
                     "heading_diff": heading_diff,
-                    "closing_speed": closing_speed,
-                    "time_to_conflict": time_to_conflict,
                 }
 
-        # Lo stop ha priorità sull'avoidance:
-        # se l'incrocio è occupato da uno che attraversa, non provo a passargli attorno.
         if best_stop is not None:
             return best_stop
 
         if best_avoid is None:
             return None
 
-        # Schivata dolce: tanto avanti, poco a destra.
-        # Così non curva come un pazzo e non va sui semafori/marciapiedi.
-        evade_forward = 5.0
-        evade_right = min(self.lane_width * 0.25, 0.60)
+        evade_forward = 3.0
+        evade_right = min(self.lane_width * 0.18, 0.45)
 
         return {
             "type": "AVOID_RIGHT",
@@ -1654,7 +1839,6 @@ class NavigationExecutor(Node):
             "y": self.current_y + forward_y * evade_forward + right_y * evade_right,
             "reason": best_avoid,
         }
-
 
     def get_lane_follow_target(self, waypoint):
         """
@@ -1970,12 +2154,118 @@ class NavigationExecutor(Node):
     def stop_vehicle(self):
         self.cmd_vel_pub.publish(Twist())
 
+
+    # ============================================================
+    # DIAGNOSTICA / RECOVERY
+    # ============================================================
+
+    def validate_runtime_parameters(self):
+        if self.obstacle_slow_distance <= self.obstacle_stop_distance:
+            self.obstacle_slow_distance = self.obstacle_stop_distance + 1.0
+            self.get_logger().warn(
+                f"[NAV_ALERT] obstacle_slow_distance corretto a {self.obstacle_slow_distance:.2f}: "
+                "deve essere maggiore di obstacle_stop_distance"
+            )
+
+        if self.traffic_light_stop_distance >= self.intersection_clearance * 4.0:
+            self.get_logger().warn(
+                f"[NAV_ALERT] traffic_light_stop_distance={self.traffic_light_stop_distance:.2f} molto alto "
+                f"rispetto a intersection_clearance={self.intersection_clearance:.2f}: "
+                "il veicolo può fermarsi troppo lontano dall'incrocio"
+            )
+
+    def alert(self, code, message, throttle=True):
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        key = str(code)
+        last = self.last_alert_time_by_key.get(key, 0.0)
+
+        if throttle and now_sec - last < self.alert_log_period_sec:
+            return
+
+        self.last_alert_time_by_key[key] = now_sec
+
+        text = f"[NAV_ALERT:{code}] vehicle={self.vehicle_id} mission={self.current_mission_id} | {message}"
+        self.get_logger().warn(text)
+
+        msg = String()
+        msg.data = json.dumps({
+            "code": code,
+            "vehicle_id": self.vehicle_id,
+            "mission_id": self.current_mission_id,
+            "message": message,
+            "state": self.state.value,
+            "x": self.current_x,
+            "y": self.current_y,
+            "yaw": self.current_yaw,
+            "stamp": now_sec,
+        })
+        self.alert_pub.publish(msg)
+
+    def update_progress_watchdog(self, distance_to_wp):
+        now = self.get_clock().now()
+
+        if self.last_progress_distance is None:
+            self.last_progress_distance = distance_to_wp
+            self.last_progress_time = now
+            return
+
+        # Se la distanza dal waypoint si riduce abbastanza, considero il veicolo vivo.
+        if distance_to_wp < self.last_progress_distance - self.stuck_progress_epsilon:
+            self.last_progress_distance = distance_to_wp
+            self.last_progress_time = now
+            return
+
+        # Se peggiora tanto, aggiorno il riferimento ma non resetto subito il timer:
+        # aiuta a scoprire oscillazioni/loop vicino allo stesso waypoint.
+        if distance_to_wp > self.last_progress_distance + 1.0:
+            self.last_progress_distance = distance_to_wp
+
+    def is_stuck_without_reason(self, distance_to_wp):
+        if self.state in (
+            ExecutorState.WAITING_TRAFFIC_LIGHT,
+            ExecutorState.OBSTACLE_STOP,
+            ExecutorState.RECALCULATING,
+            ExecutorState.IDLE,
+        ):
+            return False
+
+        if self.obstacle_min_distance <= self.obstacle_stop_distance:
+            return False
+
+        if distance_to_wp <= self.waypoint_tolerance * 2.0:
+            return False
+
+        elapsed = (self.get_clock().now() - self.last_progress_time).nanoseconds / 1e9
+        return elapsed > self.stuck_timeout_sec
+
+    def run_recovery_maneuver(self):
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if now_sec - self.last_recovery_time < 3.0:
+            return
+
+        self.last_recovery_time = now_sec
+        self.state = ExecutorState.STUCK_RECOVERY
+        self.alert("RECOVERY", "manovra breve: retromarcia + rotazione per uscire dal loop", throttle=True)
+
+        # Piccola manovra bloccante nel callback: accettabile come recovery di emergenza.
+        # Evita però durate lunghe, altrimenti congela l'action server.
+        cmd = Twist()
+        cmd.linear.x = -0.25
+        cmd.angular.z = 0.35
+        end_time = self.get_clock().now().nanoseconds / 1e9 + 0.45
+
+        while rclpy.ok() and self.get_clock().now().nanoseconds / 1e9 < end_time:
+            self.cmd_vel_pub.publish(cmd)
+
+        self.stop_vehicle()
+        self.state = ExecutorState.NAVIGATING
+
+
     # ============================================================
     # LOGGING
     # ============================================================
 
     def log_navigation_event(self, message):
-        return
         self.get_logger().info(
             f"[NAV] vehicle={self.vehicle_id} | mission={self.current_mission_id} | {message}"
         )
@@ -2109,7 +2399,6 @@ class NavigationExecutor(Node):
             distance = 0.0
 
         ctrl = waypoint.get("_last_control", {}) if waypoint else {}
-        return
         self.log_navigation_event(
             f"{reason} | stato={self.state.value} | "
             f"{self.describe_graph_position()} | "

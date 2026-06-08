@@ -69,6 +69,8 @@ setup(
             'private_car_simulator_node = smart_city.private_car_simulator_node:main',
             'gazebo_visual_controller = smart_city.gazebo_visual_controller:main',
             "simulation_report_recorder = smart_city.simulation_report_recorder:main",
+            'static_obstacle_spawner_node = smart_city.static_obstacle_spawner_node:main',
+            'dynamic_obstacle_spawner_node = smart_city.dynamic_obstacle_spawner_node:main',
         ],
     },
 )

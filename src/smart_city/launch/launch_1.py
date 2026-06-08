@@ -43,11 +43,8 @@ def compute_node_degrees(city_map):
 
 def bridge_for_vehicle(vehicle_id):
     return [
-        # LiDAR: solo Gazebo -> ROS
-        f"/{vehicle_id}/scan@gz.msgs.LaserScan[sensor_msgs/msg/LaserScan",
-
-        # Comandi: solo ROS -> Gazebo
-        f"/{vehicle_id}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
+        f"/{vehicle_id}/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan",
+        f"/{vehicle_id}/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist",
     ]
 
 

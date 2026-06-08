@@ -6,7 +6,8 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from ros_gz_interfaces.srv import SpawnEntity
+import subprocess
+import textwrap
 
 
 class PedestrianInstance:
@@ -23,7 +24,10 @@ class DynamicObstacleSpawnerNode(Node):
         super().__init__("dynamic_obstacle_spawner_node")
 
         self.declare_parameter("crossing_id", "")
-        self.declare_parameter("pedestrians_config_file", "config/pedestrian_crossings.json")
+        self.declare_parameter(
+            "pedestrians_config_file",
+            "config/pedestrian_crossings.json"
+        )
         self.declare_parameter("world_name", "smart_city_world")
 
         self.crossing_id = self.get_parameter("crossing_id").value
@@ -33,14 +37,11 @@ class DynamicObstacleSpawnerNode(Node):
         if not self.crossing_id:
             raise RuntimeError("Parametro obbligatorio mancante: crossing_id")
 
-        self.spawn_client = self.create_client(
-            SpawnEntity,
-            f"/world/{self.world_name}/create"
-        )
-
         self.crossing = self.load_crossing_by_id(self.crossing_id)
 
         self.active = {}
+        self.cmd_pubs = {}
+
         self.counter = 0
         self.last_spawn_time = 0.0
 
@@ -100,57 +101,77 @@ class DynamicObstacleSpawnerNode(Node):
     # ------------------------------------------------------------
 
     def spawn_pedestrian(self):
-        if not self.spawn_client.wait_for_service(timeout_sec=0.2):
-            self.get_logger().warn(
-                f"Servizio spawn non disponibile: /world/{self.world_name}/create"
-            )
-            return
-
         self.counter += 1
-        direction = "FORWARD" if self.counter % 2 == 1 else "BACKWARD"
 
+        direction = "FORWARD" if self.counter % 2 == 1 else "BACKWARD"
         ped_name = f"{self.crossing_id}_ped_{self.counter}"
 
         x, y, yaw = self.compute_start_pose(direction)
 
-        req = SpawnEntity.Request()
-        req.name = ped_name
-        req.allow_renaming = False
-        req.sdf = self.build_pedestrian_sdf(ped_name, x, y, yaw)
+        sdf = self.build_pedestrian_sdf(ped_name, x, y, yaw)
+        sdf = " ".join(textwrap.dedent(sdf).split())
 
-        future = self.spawn_client.call_async(req)
-        future.add_done_callback(
-            lambda fut, name=ped_name, direction=direction: self.on_spawn_result(
-                fut,
-                name,
-                direction
-            )
+        req = f'sdf: "{sdf}", name: "{ped_name}"'
+
+        ok = self.call_gz_service(
+            service=f"/world/{self.world_name}/create",
+            reqtype="gz.msgs.EntityFactory",
+            reptype="gz.msgs.Boolean",
+            req=req,
+            entity_id=ped_name
         )
 
         self.last_spawn_time = time.time()
 
-    def on_spawn_result(self, future, ped_name, direction):
-        try:
-            result = future.result()
-        except Exception as ex:
-            self.get_logger().error(f"{ped_name}: errore spawn: {ex}")
-            return
-
-        if not result.success:
-            self.get_logger().error(
-                f"{ped_name}: spawn fallito: {result.status_message}"
-            )
+        if not ok:
             return
 
         self.active[ped_name] = PedestrianInstance(
-            ped_name,
-            self.crossing,
-            direction
+            name=ped_name,
+            crossing=self.crossing,
+            direction=direction
         )
 
         self.get_logger().info(
             f"{ped_name}: pedone spawnato direction={direction}"
         )
+
+    def call_gz_service(self, service, reqtype, reptype, req, entity_id):
+        cmd = [
+            "gz", "service",
+            "-s", service,
+            "--reqtype", reqtype,
+            "--reptype", reptype,
+            "--timeout", "1000",
+            "--req", req
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=2.0
+            )
+
+            if result.returncode == 0:
+                self.get_logger().info(
+                    f"{entity_id}: richiesta spawn inviata a Gazebo"
+                )
+                return True
+
+            self.get_logger().error(
+                f"{entity_id}: spawn fallito | "
+                f"stdout={result.stdout} stderr={result.stderr}"
+            )
+            return False
+
+        except Exception as ex:
+            self.get_logger().error(
+                f"{entity_id}: errore chiamata gz service: {ex}"
+            )
+            return False
 
     # ------------------------------------------------------------
     # MOVIMENTO
@@ -159,7 +180,7 @@ class DynamicObstacleSpawnerNode(Node):
     def cleanup_finished_pedestrians(self, now):
         finished = []
 
-        for ped_name, ped in self.active.items():
+        for ped_name, ped in list(self.active.items()):
             crossing_time = self.compute_crossing_time()
             elapsed = now - ped.spawn_time
 
@@ -173,8 +194,18 @@ class DynamicObstacleSpawnerNode(Node):
         for ped_name in finished:
             del self.active[ped_name]
 
+    def get_or_create_cmd_pub(self, ped_name):
+        if ped_name not in self.cmd_pubs:
+            self.cmd_pubs[ped_name] = self.create_publisher(
+                Twist,
+                f"/{ped_name}/cmd_vel",
+                10
+            )
+
+        return self.cmd_pubs[ped_name]
+
     def publish_pedestrian_velocity(self, ped_name, direction):
-        pub = self.create_publisher(Twist, f"/{ped_name}/cmd_vel", 10)
+        pub = self.get_or_create_cmd_pub(ped_name)
 
         speed = float(self.crossing.get("pedestrian_speed_mps", 1.0))
         axis = self.crossing.get("crossing_axis", "Y").upper()
@@ -191,13 +222,20 @@ class DynamicObstacleSpawnerNode(Node):
         pub.publish(cmd)
 
     def stop_pedestrian(self, ped_name):
-        pub = self.create_publisher(Twist, f"/{ped_name}/cmd_vel", 10)
+        pub = self.get_or_create_cmd_pub(ped_name)
         pub.publish(Twist())
+
+    # ------------------------------------------------------------
+    # GEOMETRIA
+    # ------------------------------------------------------------
 
     def compute_crossing_time(self):
         start_offset = float(self.crossing.get("start_offset", -4.0))
         end_offset = float(self.crossing.get("end_offset", 4.0))
-        speed = max(0.01, float(self.crossing.get("pedestrian_speed_mps", 1.0)))
+        speed = max(
+            0.01,
+            float(self.crossing.get("pedestrian_speed_mps", 1.0))
+        )
 
         return abs(end_offset - start_offset) / speed
 
@@ -229,15 +267,22 @@ class DynamicObstacleSpawnerNode(Node):
         return f"""
 <sdf version="1.9">
   <model name="{ped_name}">
-    <pose>{x} {y} 0.55 0 0 {yaw}</pose>
+    <static>false</static>
+    <self_collide>false</self_collide>
+    <pose>{x} {y} 0.0 0 0 {yaw}</pose>
 
     <link name="base_link">
+      <pose>0 0 0.55 0 0 0</pose>
+
       <inertial>
         <mass>70</mass>
         <inertia>
-          <ixx>1</ixx>
-          <iyy>1</iyy>
-          <izz>1</izz>
+          <ixx>8</ixx>
+          <iyy>8</iyy>
+          <izz>2</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
         </inertia>
       </inertial>
 
@@ -248,6 +293,14 @@ class DynamicObstacleSpawnerNode(Node):
             <length>1.1</length>
           </cylinder>
         </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
       </collision>
 
       <visual name="visual">
@@ -271,6 +324,8 @@ class DynamicObstacleSpawnerNode(Node):
   </model>
 </sdf>
 """
+
+    # ------------------------------------------------------------
 
 
 def main(args=None):

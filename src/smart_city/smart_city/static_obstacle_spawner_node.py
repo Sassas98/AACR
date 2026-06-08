@@ -4,7 +4,8 @@ import os
 import rclpy
 from rclpy.node import Node
 
-from ros_gz_interfaces.srv import SpawnEntity
+import subprocess
+import textwrap
 
 
 class StaticObstacleSpawnerNode(Node):
@@ -22,11 +23,6 @@ class StaticObstacleSpawnerNode(Node):
 
         if not self.obstacle_id:
             raise RuntimeError("Parametro obbligatorio mancante: obstacle_id")
-
-        self.spawn_client = self.create_client(
-            SpawnEntity,
-            f"/world/{self.world_name}/create"
-        )
 
         obstacle = self.load_obstacle_by_id(self.obstacle_id)
 
@@ -63,7 +59,6 @@ class StaticObstacleSpawnerNode(Node):
 
     def spawn_obstacle(self, obstacle):
         obstacle_id = obstacle["id"]
-        obstacle_type = obstacle.get("type", "BOX").upper()
 
         x = float(obstacle.get("x", 0.0))
         y = float(obstacle.get("y", 0.0))
@@ -75,17 +70,8 @@ class StaticObstacleSpawnerNode(Node):
         sy = float(size.get("y", 1.0))
         sz = float(size.get("z", 0.7))
 
-        if not self.spawn_client.wait_for_service(timeout_sec=5.0):
-            raise RuntimeError(
-                f"Servizio Gazebo non disponibile: /world/{self.world_name}/create"
-            )
-
-        req = SpawnEntity.Request()
-        req.name = obstacle_id
-        req.allow_renaming = False
-        req.sdf = self.build_obstacle_sdf(
+        sdf = self.build_obstacle_sdf(
             obstacle_id=obstacle_id,
-            obstacle_type=obstacle_type,
             x=x,
             y=y,
             z=z,
@@ -95,37 +81,50 @@ class StaticObstacleSpawnerNode(Node):
             sz=sz
         )
 
-        future = self.spawn_client.call_async(req)
-        future.add_done_callback(
-            lambda fut: self.on_spawn_result(fut, obstacle_id)
-        )
+        sdf = " ".join(textwrap.dedent(sdf).split())
+        req = f'sdf: "{sdf}", name: "{obstacle_id}"'
 
-        self.get_logger().info(
-            f"spawn richiesto per ostacolo '{obstacle_id}' "
-            f"tipo={obstacle_type} pos=({x:.2f},{y:.2f},{z:.2f}) "
-            f"size=({sx:.2f},{sy:.2f},{sz:.2f})"
+        self.call_gz_service(
+            service=f"/world/{self.world_name}/create",
+            reqtype="gz.msgs.EntityFactory",
+            reptype="gz.msgs.Boolean",
+            req=req,
+            obstacle_id=obstacle_id
         )
+    
+    def call_gz_service(self, service, reqtype, reptype, req, obstacle_id):
+        cmd = [
+            "gz", "service",
+            "-s", service,
+            "--reqtype", reqtype,
+            "--reptype", reptype,
+            "--timeout", "1000",
+            "--req", req
+        ]
 
-    def on_spawn_result(self, future, obstacle_id):
         try:
-            result = future.result()
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=2.0
+            )
+
+            if result.returncode == 0:
+                self.get_logger().info(
+                    f"{obstacle_id}: richiesta spawn inviata a Gazebo"
+                )
+            else:
+                self.get_logger().error(
+                    f"{obstacle_id}: spawn fallito | "
+                    f"stdout={result.stdout} stderr={result.stderr}"
+                )
+
         except Exception as ex:
             self.get_logger().error(
-                f"{obstacle_id}: errore durante spawn: {ex}"
+                f"{obstacle_id}: errore chiamata gz service: {ex}"
             )
-            rclpy.shutdown()
-            return
-
-        if result.success:
-            self.get_logger().info(
-                f"{obstacle_id}: ostacolo spawnato correttamente"
-            )
-        else:
-            self.get_logger().error(
-                f"{obstacle_id}: spawn fallito: {result.status_message}"
-            )
-
-        rclpy.shutdown()
 
     # ------------------------------------------------------------
     # SDF
@@ -134,7 +133,6 @@ class StaticObstacleSpawnerNode(Node):
     def build_obstacle_sdf(
         self,
         obstacle_id,
-        obstacle_type,
         x,
         y,
         z,
@@ -143,57 +141,50 @@ class StaticObstacleSpawnerNode(Node):
         sy,
         sz
     ):
-        if obstacle_type == "BARRIER":
-            ambient = "0.95 0.25 0.05 1"
-            diffuse = "0.95 0.25 0.05 1"
-        elif obstacle_type == "BOX":
-            ambient = "0.45 0.30 0.15 1"
-            diffuse = "0.45 0.30 0.15 1"
-        else:
-            ambient = "0.45 0.45 0.45 1"
-            diffuse = "0.45 0.45 0.45 1"
+        ambient = "0.45 0.30 0.15 1"
+        diffuse = "0.45 0.30 0.15 1"
 
         mass = max(1.0, sx * sy * sz * 20.0)
 
         return f"""
-<sdf version="1.9">
-  <model name="{obstacle_id}">
-    <static>true</static>
-    <pose>{x} {y} {z} 0 0 {yaw}</pose>
+            <sdf version='1.9'>
+                <model name='{obstacle_id}'>
+                    <static>true</static>
+                    <pose>{x} {y} {z} 0 0 {yaw}</pose>
 
-    <link name="base_link">
-      <inertial>
-        <mass>{mass}</mass>
-        <inertia>
-          <ixx>1.0</ixx>
-          <iyy>1.0</iyy>
-          <izz>1.0</izz>
-        </inertia>
-      </inertial>
+                    <link name='base_link'>
+                    <inertial>
+                        <mass>{mass}</mass>
+                        <inertia>
+                        <ixx>1.0</ixx>
+                        <iyy>1.0</iyy>
+                        <izz>1.0</izz>
+                        </inertia>
+                    </inertial>
 
-      <collision name="collision">
-        <geometry>
-          <box>
-            <size>{sx} {sy} {sz}</size>
-          </box>
-        </geometry>
-      </collision>
+                    <collision name='collision'>
+                        <geometry>
+                        <box>
+                            <size>{sx} {sy} {sz}</size>
+                        </box>
+                        </geometry>
+                    </collision>
 
-      <visual name="visual">
-        <geometry>
-          <box>
-            <size>{sx} {sy} {sz}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>{ambient}</ambient>
-          <diffuse>{diffuse}</diffuse>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>
-"""
+                    <visual name='visual'>
+                        <geometry>
+                        <box>
+                            <size>{sx} {sy} {sz}</size>
+                        </box>
+                        </geometry>
+                        <material>
+                        <ambient>{ambient}</ambient>
+                        <diffuse>{diffuse}</diffuse>
+                        </material>
+                    </visual>
+                    </link>
+                </model>
+            </sdf>
+        """
 
 def main(args=None):
     rclpy.init(args=args)
