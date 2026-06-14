@@ -58,10 +58,6 @@ class PrivateCarSimulatorNode(Node):
 
         self.timer = self.create_timer(1.0, self.loop)
 
-        self.get_logger().info(
-            f"private_car_simulator_node avviato: {len(self.private_cars)} auto private"
-        )
-
     # ------------------------------------------------------------------
     # CONFIG
     # ------------------------------------------------------------------
@@ -118,10 +114,6 @@ class PrivateCarSimulatorNode(Node):
                 f"/{vehicle_id}/navigation_executor/navigate_to_pose"
             )
 
-            self.get_logger().info(
-                f"{vehicle_id}: registrata come auto privata"
-            )
-
     # ------------------------------------------------------------------
     # CALLBACK
     # ------------------------------------------------------------------
@@ -172,9 +164,6 @@ class PrivateCarSimulatorNode(Node):
         client = self.action_clients[car.vehicle_id]
 
         if not client.wait_for_server(timeout_sec=0.2):
-            self.get_logger().warn(
-                f"{car.vehicle_id}: navigation_executor non disponibile"
-            )
             return
 
         goal = NavigateToPose.Goal()
@@ -188,11 +177,6 @@ class PrivateCarSimulatorNode(Node):
         car.busy = True
         car.last_goal_time = time.time()
 
-        self.get_logger().info(
-            f"{car.vehicle_id}: invio goal verso "
-            f"({goal.target_x:.2f}, {goal.target_y:.2f})"
-        )
-
         future = client.send_goal_async(goal)
         future.add_done_callback(
             lambda fut, vid=car.vehicle_id: self.on_goal_response(fut, vid)
@@ -205,16 +189,10 @@ class PrivateCarSimulatorNode(Node):
             goal_handle = future.result()
         except Exception as ex:
             car.busy = False
-            self.get_logger().error(
-                f"{vehicle_id}: errore invio goal: {ex}"
-            )
             return
 
         if not goal_handle.accepted:
             car.busy = False
-            self.get_logger().warn(
-                f"{vehicle_id}: goal rifiutato"
-            )
             return
 
         car.goal_handle = goal_handle
@@ -236,11 +214,6 @@ class PrivateCarSimulatorNode(Node):
                 f"{vehicle_id}: errore risultato goal: {ex}"
             )
             return
-
-        self.get_logger().info(
-            f"{vehicle_id}: goal concluso success={result.success}, "
-            f"message='{result.message}'"
-        )
 
     # ------------------------------------------------------------------
     # TARGET SELECTION

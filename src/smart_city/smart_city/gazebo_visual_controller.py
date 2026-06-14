@@ -88,9 +88,6 @@ class GazeboVisualController(Node):
 
         self.timer = self.create_timer(0.5, self.cleanup_loop)
 
-        self.get_logger().info(
-            f"gazebo_visual_controller avviato | world={self.world_name}"
-        )
 
     # ============================================================
     # MAPPA
@@ -155,7 +152,7 @@ class GazeboVisualController(Node):
         self.cleanup_taxi_requests()
 
     def cleanup_taxi_requests(self):
-        to_remove = []
+        reached_requests = []
 
         for request_id, req in list(self.active_taxi_requests.items()):
             for vehicle_id, vehicle in self.vehicle_states.items():
@@ -173,12 +170,17 @@ class GazeboVisualController(Node):
                     continue
 
                 if d <= self.pickup_reached_distance:
-                    to_remove.append(request_id)
+                    reached_requests.append((request_id, vehicle_id))
                     break
 
-        for request_id in to_remove:
+        for request_id, vehicle_id in reached_requests:
             req = self.active_taxi_requests.pop(request_id, None)
             if req:
+                self.get_logger().info(
+                    f"obbiettivo raggiunto in "
+                    f"({req['x']:.2f}, {req['y']:.2f}) "
+                    f"da veicolo {vehicle_id}"
+                )
                 self.delete_model(req["model_name"])
 
     # ============================================================
@@ -489,8 +491,8 @@ class GazeboVisualController(Node):
                 stderr=subprocess.DEVNULL,
                 timeout=2.0
             )
-        except Exception as ex:
-            self.get_logger().warn(f"Gazebo service fallito {service}: {ex}")
+        except Exception:
+            pass
 
     # ============================================================
     # UTILITY

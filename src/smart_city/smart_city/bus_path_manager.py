@@ -94,12 +94,6 @@ class BusPathManager(Node):
             self.start_after_idle_delay
         )
 
-        self.get_logger().info(
-            f"{self.bus_id}: bus_path_manager avviato | "
-            f"path iniziale={self.current_path_id}, "
-            f"laps={self.remaining_laps}, "
-            f"start_delay={start_delay:.1f}s"
-        )
 
     # ------------------------------------------------------------------
     # CONFIG
@@ -166,9 +160,7 @@ class BusPathManager(Node):
         self.current_waypoint_index = 0
         self.state = BusState.ON_ROUTE
 
-        self.get_logger().info(
-            f"{self.bus_id}: partenza su {self.current_path_id}"
-        )
+        self.log_path_start()
 
     def decision_loop(self):
         if self.navigation_busy:
@@ -211,11 +203,25 @@ class BusPathManager(Node):
     # ROUTE
     # ------------------------------------------------------------------
 
+    def log_path_start(self):
+        waypoints = self.paths.get(self.current_path_id, [])
+
+        if not waypoints:
+            return
+
+        path_repr = " -> ".join(
+            str(waypoint.get("id", "?"))
+            for waypoint in waypoints
+        )
+
+        self.get_logger().info(
+            f"inizio percorso [{path_repr}] per autobus {self.bus_id}"
+        )
+
     def go_to_next_waypoint(self):
         waypoints = self.paths.get(self.current_path_id)
 
         if not waypoints:
-            self.get_logger().warn(f"{self.bus_id}: path inesistente {self.current_path_id}")
             return
 
         waypoint = waypoints[self.current_waypoint_index]
@@ -239,20 +245,13 @@ class BusPathManager(Node):
         self.current_waypoint_index = 0
         self.remaining_laps -= 1
 
-        self.get_logger().info(
-            f"{self.bus_id}: giro completato su {self.current_path_id}, "
-            f"giri rimanenti={self.remaining_laps}"
-        )
-
         if self.remaining_laps > 0:
             best_path = self.find_best_path()
 
             if best_path and best_path != self.current_path_id:
-                self.get_logger().info(
-                    f"{self.bus_id}: prossimo giro cambio path "
-                    f"{self.current_path_id} -> {best_path}"
-                )
                 self.current_path_id = best_path
+
+            self.log_path_start()
 
     # ------------------------------------------------------------------
     # PARKING
@@ -262,9 +261,6 @@ class BusPathManager(Node):
         parking = self.find_free_parking()
 
         if parking is None:
-            self.get_logger().warn(
-                f"{self.bus_id}: nessun parcheggio libero, continuo il giro"
-            )
             self.remaining_laps = 1
             self.state = BusState.ON_ROUTE
             return
@@ -309,7 +305,6 @@ class BusPathManager(Node):
         msg.data = json.dumps(payload)
         self.parking_claim_pub.publish(msg)
 
-        self.get_logger().info(f"{self.bus_id}: claim parcheggio {parking_id}")
 
     # ------------------------------------------------------------------
     # ACTION CLIENT
@@ -320,7 +315,6 @@ class BusPathManager(Node):
             return
 
         if not self.navigation_client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().warn(f"{self.bus_id}: navigation_executor non disponibile")
             return
 
         goal = NavigateToPose.Goal()
@@ -333,11 +327,6 @@ class BusPathManager(Node):
 
         self.navigation_busy = True
 
-        self.get_logger().info(
-            f"{self.bus_id}: invio goal {mission_id}, "
-            f"type={target_type}, target=({target_x:.2f},{target_y:.2f}), "
-            f"speed={max_speed:.2f}"
-        )
 
         future = self.navigation_client.send_goal_async(
             goal,
@@ -351,7 +340,6 @@ class BusPathManager(Node):
 
         if not goal_handle.accepted:
             self.navigation_busy = False
-            self.get_logger().warn(f"{self.bus_id}: goal rifiutato")
             return
 
         self.active_goal_handle = goal_handle
@@ -360,12 +348,7 @@ class BusPathManager(Node):
         result_future.add_done_callback(self.on_navigation_result)
 
     def on_navigation_feedback(self, feedback_msg):
-        feedback = feedback_msg.feedback
-
-        self.get_logger().debug(
-            f"{self.bus_id}: feedback nav status={feedback.status}, "
-            f"dist={feedback.distance_remaining:.2f}"
-        )
+        pass
 
     def on_navigation_result(self, future):
         self.navigation_busy = False
@@ -373,18 +356,10 @@ class BusPathManager(Node):
         result = future.result().result
 
         if not result.success:
-            self.get_logger().warn(
-                f"{self.bus_id}: navigazione fallita: {result.message}"
-            )
-
             if self.state == BusState.RETURNING_TO_PARKING:
                 self.state = BusState.ON_ROUTE
 
             return
-
-        self.get_logger().info(
-            f"{self.bus_id}: navigazione completata: {result.message}"
-        )
 
         if self.state == BusState.ON_ROUTE:
             self.complete_current_waypoint()
@@ -392,7 +367,6 @@ class BusPathManager(Node):
 
         if self.state == BusState.RETURNING_TO_PARKING:
             self.state = BusState.PARKED
-            self.get_logger().info(f"{self.bus_id}: parcheggiato")
             return
 
     # ------------------------------------------------------------------

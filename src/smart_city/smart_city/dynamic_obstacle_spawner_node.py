@@ -136,11 +136,6 @@ class DynamicObstacleSpawnerNode(Node):
 
         self.timer = self.create_timer(self.update_period_sec, self.loop)
 
-        self.get_logger().info(
-            f"dynamic_obstacle_spawner_node avviato per crossing '{self.crossing_id}' "
-            f"con global_time_scale={self.global_time_scale}"
-        )
-
     # ------------------------------------------------------------
     # CONFIG
     # ------------------------------------------------------------
@@ -221,9 +216,6 @@ class DynamicObstacleSpawnerNode(Node):
 
         if not self.can_spawn_at(start_x, start_y, now):
             if now - self.last_spawn_block_log_time > 2.0:
-                self.get_logger().info(
-                    f"{self.crossing_id}: spawn pedone rimandato, area di partenza occupata"
-                )
                 self.last_spawn_block_log_time = now
             return
 
@@ -313,13 +305,6 @@ class DynamicObstacleSpawnerNode(Node):
         )
 
         self.active[ped_name] = ped
-
-        self.get_logger().info(
-            f"{ped_name}: spawnato, attraversamento {direction}, "
-            f"start=({start_x:.2f},{start_y:.2f}), "
-            f"end=({end_x:.2f},{end_y:.2f}), "
-            f"speed={speed:.2f}m/s"
-        )
 
     # ------------------------------------------------------------
     # UPDATE + CLEANUP
@@ -466,9 +451,6 @@ class DynamicObstacleSpawnerNode(Node):
         if not ok:
             now = time.time()
             if now - self.last_set_pose_error_time > 2.0:
-                self.get_logger().warn(
-                    f"{ped.name}: set_pose non confermato, controllo nome/world"
-                )
                 self.last_set_pose_error_time = now
 
     def remove_pedestrian_from_gazebo(self, ped: PedestrianInstance):
@@ -490,11 +472,6 @@ class DynamicObstacleSpawnerNode(Node):
             log_success=True,
             log_failure=True,
         )
-
-        if ok:
-            self.get_logger().info(f"{ped.name}: attraversamento completato, rimosso")
-        else:
-            self.get_logger().warn(f"{ped.name}: rimozione non confermata")
 
     # ------------------------------------------------------------
     # GEOMETRIA
@@ -591,33 +568,14 @@ class DynamicObstacleSpawnerNode(Node):
             stderr = result.stderr.strip()
 
             if result.returncode != 0:
-                if log_failure:
-                    self.get_logger().error(
-                        f"{entity_id}: {action_name} fallito | "
-                        f"stdout={stdout} stderr={stderr}"
-                    )
                 return False
 
             if "data: true" not in stdout:
-                if log_failure:
-                    self.get_logger().error(
-                        f"{entity_id}: {action_name} NON confermato da Gazebo | "
-                        f"stdout={stdout} stderr={stderr}"
-                    )
                 return False
-
-            if log_success:
-                self.get_logger().info(
-                    f"{entity_id}: {action_name} confermato da Gazebo"
-                )
 
             return True
 
         except subprocess.TimeoutExpired:
-            if log_failure:
-                self.get_logger().error(
-                    f"{entity_id}: timeout durante {action_name} su {service}"
-                )
             return False
 
         except Exception as ex:

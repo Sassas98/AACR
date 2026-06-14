@@ -36,8 +36,6 @@ class TaxiRequestGenerator(Node):
 
         self.counter = 0
 
-        self.get_logger().info("taxi_request_generator avviato")
-
     def load_config(self, file_path):
         if not os.path.isabs(file_path):
             file_path = os.path.join(os.getcwd(), file_path)
@@ -74,11 +72,6 @@ class TaxiRequestGenerator(Node):
         msg.data = json.dumps(payload)
 
         self.pub.publish(msg)
-
-        self.get_logger().info(
-            f"taxi request generata: {payload['request_id']} "
-            f"{pickup['id']} -> {dropoff['id']}"
-        )
 
         self.next_request_time = now + random.uniform(self.min_interval, self.max_interval)
 

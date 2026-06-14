@@ -75,9 +75,6 @@ class TaxiRequestManager(Node):
             "/navigation_executor/navigate_to_pose"
         )
 
-        self.get_logger().info(
-            f"taxi_request_manager avviato per taxi_id={self.taxi_id}"
-        )
 
     # ------------------------------------------------------------------
     # CONFIG
@@ -128,16 +125,12 @@ class TaxiRequestManager(Node):
         try:
             assignment = json.loads(msg.data)
         except json.JSONDecodeError:
-            self.get_logger().warn(f"Assignment non JSON: {msg.data}")
             return
 
         if assignment.get("taxi_id") != self.taxi_id:
             return
 
         if self.state not in [TaxiServiceState.IDLE, TaxiServiceState.PARKED]:
-            self.get_logger().warn(
-                f"{self.taxi_id}: assignment ricevuto ma taxi non libero"
-            )
             return
 
         required = [
@@ -149,14 +142,16 @@ class TaxiRequestManager(Node):
         ]
 
         if not all(k in assignment for k in required):
-            self.get_logger().warn(f"Assignment incompleto: {assignment}")
             return
 
         self.active_request = assignment
         self.claimed_parking_id = None
 
         self.get_logger().info(
-            f"{self.taxi_id}: assignment ricevuto per request {assignment['request_id']}"
+            f"ottenuto incarico {assignment['request_id']} "
+            f"in posizione ({float(assignment['pickup_x']):.2f}, "
+            f"{float(assignment['pickup_y']):.2f}) "
+            f"per taxi {self.taxi_id}"
         )
 
         self.state = TaxiServiceState.TO_PICKUP
@@ -175,7 +170,6 @@ class TaxiRequestManager(Node):
 
     def send_navigation_goal(self, mission_id, target_type, x, y, max_speed):
         if not self.navigation_client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().warn("navigation_executor non disponibile")
             return
 
         goal = NavigateToPose.Goal()
@@ -188,10 +182,6 @@ class TaxiRequestManager(Node):
 
         self.navigation_busy = True
 
-        self.get_logger().info(
-            f"{self.taxi_id}: invio navigation goal {mission_id}, "
-            f"type={target_type}, target=({x}, {y})"
-        )
 
         future = self.navigation_client.send_goal_async(
             goal,
@@ -205,7 +195,6 @@ class TaxiRequestManager(Node):
 
         if not goal_handle.accepted:
             self.navigation_busy = False
-            self.get_logger().warn(f"{self.taxi_id}: goal rifiutato")
             self.reset_to_idle()
             return
 
@@ -213,12 +202,7 @@ class TaxiRequestManager(Node):
         result_future.add_done_callback(self.on_navigation_result)
 
     def on_navigation_feedback(self, feedback_msg):
-        feedback = feedback_msg.feedback
-
-        self.get_logger().debug(
-            f"{self.taxi_id}: nav={feedback.status}, "
-            f"dist={feedback.distance_remaining:.2f}"
-        )
+        pass
 
     def on_navigation_result(self, future):
         self.navigation_busy = False
@@ -226,9 +210,6 @@ class TaxiRequestManager(Node):
         result = future.result().result
 
         if not result.success:
-            self.get_logger().warn(
-                f"{self.taxi_id}: navigazione fallita: {result.message}"
-            )
             self.reset_to_idle()
             return
 
@@ -251,9 +232,6 @@ class TaxiRequestManager(Node):
     def on_pickup_reached(self):
         request_id = self.active_request["request_id"]
 
-        self.get_logger().info(
-            f"{self.taxi_id}: pickup raggiunto per {request_id}"
-        )
 
         self.state = TaxiServiceState.TO_DROPOFF
 
@@ -268,9 +246,6 @@ class TaxiRequestManager(Node):
     def on_dropoff_reached(self):
         request_id = self.active_request["request_id"]
 
-        self.get_logger().info(
-            f"{self.taxi_id}: dropoff raggiunto per {request_id}"
-        )
 
         self.active_request = None
         self.return_to_parking()
@@ -279,9 +254,6 @@ class TaxiRequestManager(Node):
         parking = self.find_free_parking()
 
         if parking is None:
-            self.get_logger().warn(
-                f"{self.taxi_id}: nessun parcheggio libero, resto IDLE"
-            )
             self.state = TaxiServiceState.IDLE
             return
 
@@ -314,9 +286,6 @@ class TaxiRequestManager(Node):
 
         self.state = TaxiServiceState.PARKED
 
-        self.get_logger().info(
-            f"{self.taxi_id}: parcheggiato in {self.claimed_parking_id}"
-        )
 
     def reset_to_idle(self):
         self.active_request = None

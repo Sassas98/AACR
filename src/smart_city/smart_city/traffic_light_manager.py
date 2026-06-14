@@ -120,13 +120,6 @@ class TrafficLightManager(Node):
 
         self.timer = self.create_timer(0.25, self.update)
 
-        self.get_logger().info(
-            f"traffic_light_manager avviato | node={self.node_id} | "
-            f"x={self.x_branches} | y={self.y_branches} | "
-            f"green={self.green_duration}s, "
-            f"yellow={self.yellow_duration}s, red={self.red_duration}s"
-        )
-
     # ============================================================
     # MAPPA
     # ============================================================
@@ -238,7 +231,6 @@ class TrafficLightManager(Node):
         ]
 
         if not all(k in request for k in required):
-            self.get_logger().warn(f"Priority request incompleta: {request}")
             return
 
         from_node = request["from_node_id"]
@@ -337,16 +329,6 @@ class TrafficLightManager(Node):
 
         self.current_phase = phase
         self.phase_started_at = time.time()
-        self.get_logger().info(
-            f"traffic_light_manager avviato | node={self.node_id} | "
-            f"x={self.x_branches} | y={self.y_branches} | "
-            f"multiplier={self.phase_time_multiplier}x | "
-            f"green={self.green_duration}s, "
-            f"yellow={self.yellow_duration}s, "
-            f"red={self.red_duration}s | "
-            f"priority_reduction={self.priority_red_reduction_sec}s, "
-            f"priority_ttl={self.priority_request_ttl_sec}s"
-        )
 
     # ============================================================
     # LOGICA SEMAFORICA

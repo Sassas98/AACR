@@ -72,10 +72,6 @@ class TaxiCoordinator(Node):
             self.decision_loop
         )
 
-        self.get_logger().info(
-            f"taxi_coordinator avviato per taxi_id={self.taxi_id}"
-        )
-
     # ------------------------------------------------------------------
     # TAXI REQUEST DA GAZEBO
     # ------------------------------------------------------------------
@@ -96,7 +92,6 @@ class TaxiCoordinator(Node):
         ]
 
         if not all(k in request for k in required):
-            self.get_logger().warn(f"Taxi request incompleta: {request}")
             return
 
         request_id = request["request_id"]
@@ -118,7 +113,6 @@ class TaxiCoordinator(Node):
 
     def ask_status_and_maybe_claim(self, request):
         if not self.status_client.wait_for_service(timeout_sec=0.2):
-            self.get_logger().warn("/taxi_status non disponibile")
             return
 
         future = self.status_client.call_async(Trigger.Request())
@@ -134,9 +128,6 @@ class TaxiCoordinator(Node):
             return
 
         if not response.success:
-            self.get_logger().info(
-                f"{self.taxi_id}: taxi non disponibile, ignoro request {request['request_id']}"
-            )
             self.ignored_requests.add(request["request_id"])
             return
 
@@ -169,10 +160,6 @@ class TaxiCoordinator(Node):
         msg.data = json.dumps(payload)
 
         self.claims_pub.publish(msg)
-
-        self.get_logger().info(
-            f"{self.taxi_id}: claim pubblicato per request {request_id}"
-        )
 
     def on_taxi_claim(self, msg):
         try:
@@ -232,10 +219,6 @@ class TaxiCoordinator(Node):
         if winner == self.taxi_id:
             self.publish_assignment(self.pending_request)
             self.assigned_requests.add(request_id)
-        else:
-            self.get_logger().info(
-                f"{self.taxi_id}: request {request_id} persa, vincitore={winner}"
-            )
 
         self.pending_request = None
         self.claim_started_at = None
@@ -271,10 +254,6 @@ class TaxiCoordinator(Node):
         msg.data = json.dumps(payload)
 
         self.assignment_pub.publish(msg)
-
-        self.get_logger().info(
-            f"{self.taxi_id}: assignment pubblicato per request {request['request_id']}"
-        )
 
 
 def main(args=None):

@@ -228,6 +228,7 @@ class LidarObstaclePolicy:
                 f"ostacolo LiDAR a {node.obstacle_min_distance:.2f}m: mi fermo e osservo",
                 throttle=False
             )
+            node.log_lidar_obstacle_wait_start()
 
         node.record_lidar_obstacle_sample()
 
@@ -745,22 +746,16 @@ class RecoveryController:
 
 
 class ConsoleReporter:
-    """Console pulita: solo inizio missione e arrivo."""
+    """Console pulita: nessun log di start/arrival dal navigation executor."""
 
     def __init__(self, node):
         self.node = node
 
     def mission_start(self, goal):
-        self.node.get_logger().info(
-            f"[NAV] veicolo {self.node.vehicle_id} deve andare a "
-            f"({goal.target_x:.2f}, {goal.target_y:.2f})"
-        )
+        return
 
     def mission_arrival(self, goal):
-        self.node.get_logger().info(
-            f"[NAV] veicolo {self.node.vehicle_id} è arrivato a "
-            f"({goal.target_x:.2f}, {goal.target_y:.2f})"
-        )
+        return
 
 
 class NavigationExecutor(Node):
@@ -991,6 +986,7 @@ class NavigationExecutor(Node):
 
         self.last_diag_time = self.get_clock().now()
         self.last_alert_time_by_key = {}
+        self.last_console_event_time_by_key = {}
         self.last_progress_distance = None
         self.last_progress_time = self.get_clock().now()
         self.last_recovery_time = 0.0
@@ -2243,6 +2239,7 @@ class NavigationExecutor(Node):
                 f"movimento={from_node_id}->{intersection_node_id}->{to_node_id}",
                 throttle=True
             )
+            self.log_traffic_light_wait_start(intersection_node_id, color)
 
         waited = now_sec - started
 
@@ -2859,8 +2856,8 @@ class NavigationExecutor(Node):
         self.last_decision_reason = decision.reason
         self.last_decision_payload = decision.payload
 
-        self.last_decision_type = decision.type.value
-        self.last_decision_reason = decision.reason
+        self.log_vehicle_collision_decision(decision)
+
         """Esegue una sola decisione per tick. Ritorna True se i timer del waypoint vanno resettati."""
         if decision.type == DecisionType.STOP:
             self.stop_vehicle()
@@ -3141,10 +3138,8 @@ class NavigationExecutor(Node):
             pass
 
     def alert(self, code, message, throttle=True):
-        # Gli alert restano disponibili sul topic navigation_alerts, ma non
-        # sporcano più la console. In console vogliamo solo:
-        # 1) veicolo X deve andare a Y
-        # 2) veicolo X è arrivato a Y
+        # Gli alert restano disponibili sul topic navigation_alerts.
+        # La console viene gestita solo dai metodi log_* mirati qui sopra.
         now_sec = self.get_clock().now().nanoseconds / 1e9
         key = str(code)
         last = self.last_alert_time_by_key.get(key, 0.0)
@@ -3407,26 +3402,97 @@ class NavigationExecutor(Node):
     # ============================================================
 
     def log_mission_start(self, goal):
-        if hasattr(self, "console_reporter"):
-            self.console_reporter.mission_start(goal)
-        else:
-            self.get_logger().info(
-                f"[NAV] veicolo {self.vehicle_id} deve andare a "
-                f"({goal.target_x:.2f}, {goal.target_y:.2f})"
-            )
+        return
 
     def log_mission_arrival(self, goal):
-        if hasattr(self, "console_reporter"):
-            self.console_reporter.mission_arrival(goal)
-        else:
-            self.get_logger().info(
-                f"[NAV] veicolo {self.vehicle_id} è arrivato a "
-                f"({goal.target_x:.2f}, {goal.target_y:.2f})"
-            )
+        return
 
     def log_navigation_event(self, message):
-        # No-op intenzionale: la console deve mostrare solo start e arrivo missione.
+        # No-op intenzionale: la console del navigator mostra solo eventi di attesa/sicurezza.
         return
+
+    def log_console_event(self, key, message, throttle_sec=6.0):
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        key = str(key)
+        last = self.last_console_event_time_by_key.get(key, 0.0)
+
+        if now_sec - last < throttle_sec:
+            return
+
+        self.last_console_event_time_by_key[key] = now_sec
+        self.get_logger().info(message)
+
+    def log_traffic_light_wait_start(self, intersection_node_id, color):
+        color = str(color).lower()
+        color_label = "rosso" if color == "red" else color
+
+        self.log_console_event(
+            key=f"traffic_light_wait:{intersection_node_id}",
+            message=(
+                f"{self.vehicle_id}: inizio attesa per semaforo "
+                f"{intersection_node_id} {color_label}"
+            ),
+            throttle_sec=30.0
+        )
+
+    def log_lidar_obstacle_wait_start(self):
+        distance = self.obstacle_min_distance
+        if math.isfinite(distance):
+            detail = f" a {distance:.2f}m"
+        else:
+            detail = ""
+
+        self.log_console_event(
+            key="lidar_obstacle_wait",
+            message=f"{self.vehicle_id}: ostacolo rilevato con LiDAR{detail}, attendere",
+            throttle_sec=10.0
+        )
+
+    def log_vehicle_collision_decision(self, decision):
+        reason = str(decision.reason or "")
+
+        if not (reason.startswith("vehicle_") or reason.startswith("deadlock_")):
+            return
+
+        other_id = self.extract_vehicle_id_from_decision(decision)
+        if not other_id:
+            return
+
+        if decision.type in [
+            DecisionType.TEMPORARY_TARGET,
+            DecisionType.VEHICLE_DEADLOCK_RECOVERY,
+        ]:
+            action = "manovra"
+        else:
+            action = "attesa"
+
+        self.log_console_event(
+            key=f"vehicle_collision:{other_id}:{action}",
+            message=(
+                f"{self.vehicle_id}: possibile collisione rilevata con veicolo "
+                f"{other_id}, {action}"
+            ),
+            throttle_sec=8.0
+        )
+
+    def extract_vehicle_id_from_decision(self, decision):
+        payload = decision.payload if isinstance(decision.payload, dict) else {}
+
+        vehicle_id = payload.get("vehicle_id")
+        if vehicle_id:
+            return str(vehicle_id)
+
+        conflict = payload.get("conflict")
+        if isinstance(conflict, dict) and conflict.get("vehicle_id"):
+            return str(conflict.get("vehicle_id"))
+
+        reason = str(decision.reason or "")
+        for marker in ["private_car_", "taxi_", "bus_"]:
+            index = reason.find(marker)
+            if index >= 0:
+                return reason[index:]
+
+        return None
 
     def log_built_path(self, start_x, start_y, target_x, target_y, node_path, waypoints):
         if not self.path_log_enabled:
