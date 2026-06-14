@@ -9,9 +9,9 @@
       "crossing_axis": "Y",
       "start_offset": -4.0,
       "end_offset": 4.0,
-      "spawn_every_sec": 4.0,
-      "pedestrian_speed_mps": 1.1,
-      "max_active_pedestrians": 3
+      "spawn_every_sec": 8.0,
+      "pedestrian_speed_mps": 1.3,
+      "max_active_pedestrians": 1
     },
     {
       "id": "crossing_e34_vertical",
@@ -22,9 +22,9 @@
       "crossing_axis": "X",
       "start_offset": -4.0,
       "end_offset": 4.0,
-      "spawn_every_sec": 6.0,
-      "pedestrian_speed_mps": 0.9,
-      "max_active_pedestrians": 2
+      "spawn_every_sec": 8.0,
+      "pedestrian_speed_mps": 1.3,
+      "max_active_pedestrians": 1
     },
     {
       "id": "crossing_e18_bottom",
@@ -35,9 +35,9 @@
       "crossing_axis": "Y",
       "start_offset": -4.0,
       "end_offset": 4.0,
-      "spawn_every_sec": 5.0,
+      "spawn_every_sec": 8.0,
       "pedestrian_speed_mps": 1.3,
-      "max_active_pedestrians": 3
+      "max_active_pedestrians": 1
     },
     {
       "id": "crossing_e26_left",
@@ -48,9 +48,9 @@
       "crossing_axis": "X",
       "start_offset": -4.0,
       "end_offset": 4.0,
-      "spawn_every_sec": 7.0,
-      "pedestrian_speed_mps": 0.8,
-      "max_active_pedestrians": 2
+      "spawn_every_sec": 8.0,
+      "pedestrian_speed_mps": 1.3,
+      "max_active_pedestrians": 1
     }
   ]
 }

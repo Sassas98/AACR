@@ -9,5 +9,18 @@ ros2 launch smart_city launch_2.py
 
 
 
+source /opt/ros/jazzy/setup.bash
+cd ~/AACR
+source ~/AACR/install/setup.bash
+ros2 run smart_city simulation_report_recorder --ros-args -p duration_sec:=600.0
 
-ros2 run smart_city simulation_report_recorder --ros-args -p duration_sec:=300.0
+
+
+ros2 action send_goal /bus_1/navigation_executor/navigate_to_pose smart_city_interfaces/action/NavigateToPose \
+"{target_x: 10.0, target_y: 5.0, mission_id: 'manual_test_bus_1'}" \
+--feedback
+
+
+
+
+ros2 service call /taxi_1/navigation_executor/debug_state std_srvs/srv/Trigger "{}"

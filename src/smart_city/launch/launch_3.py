@@ -54,15 +54,43 @@ def navigation_executor_parameters(
         "initial_y": spawn_y,
         "initial_yaw": spawn_yaw,
 
-        "default_max_speed": 2.8,
-        "linear_k": 2.0,
-        "angular_k": 0.7,
-        "max_angular_speed": 0.25,
+        # Prima era 2.8: abbastanza veloce.
+        # Per debug e stabilità meglio un pelo meno.
+        "default_max_speed": 2.2,
 
-        "waypoint_tolerance": 0.25,
-        "target_tolerance": 0.40,
+        # Movimento verso il target.
+        "linear_k": 1.8,
 
-        "lane_offset_ratio": 0.5
+        # Sterzata molto più reattiva.
+        # 0.7 era troppo moscio.
+        "angular_k": 2.4,
+
+        # Questo era il vero veleno: 0.25.
+        # Metti almeno 1.4 / 1.6.
+        "max_angular_speed": 1.6,
+
+        # 0.25 è troppo severo: resta a inseguire il waypoint perfetto.
+        "waypoint_tolerance": 0.45,
+        "target_tolerance": 0.55,
+
+        # Se lane_width nella mappa è 1.2, 0.5 = offset 0.6m dal centro.
+        # Questo probabilmente va bene: non lo toccherei subito.
+        "lane_offset_ratio": 0.5,
+
+        # Consigliato: tieni coerente la lista vera dei semafori.
+        "traffic_light_node_ids": [
+            "n7", "n9", "n14", "n17", "n19", "n22", "n23", "n24"
+        ],
+
+        # Se hai messo il semaforo più lento.
+        "traffic_light_wait_timeout_sec": 180.0,
+        "traffic_light_commit_ttl_sec": 4.0,
+
+        # Manovre veicolo più decise.
+        "vehicle_unjam_reverse_sec": 1.80,
+        "vehicle_unjam_turn_sec": 1.60,
+        "vehicle_unjam_reverse_speed": -0.65,
+        "vehicle_unjam_turn_speed": 1.45,
     }
 
 

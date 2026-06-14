@@ -45,23 +45,49 @@ class TrafficLightManager(Node):
         self.declare_parameter("node_id", "n2")
         self.declare_parameter("map_config_file", "config/city_map.json")
 
+        # Durate base del ciclo semaforico.
+        # Verranno moltiplicate per phase_time_multiplier.
         self.declare_parameter("green_duration", 120.0)
         self.declare_parameter("yellow_duration", 10.0)
         self.declare_parameter("red_duration", 30.0)
+
+        # Rallenta globalmente tutte le fasi.
+        # 5.0 => semaforo 5 volte più lento.
+        self.declare_parameter("phase_time_multiplier", 5.0)
+
+        # Anche la priorità va scalata, altrimenti con fasi lente scade troppo presto.
         self.declare_parameter("priority_red_reduction_sec", 20.0)
         self.declare_parameter("priority_request_ttl_sec", 30.0)
 
         self.node_id = str(self.get_parameter("node_id").value)
         self.map_config_file = self.get_parameter("map_config_file").value
 
-        self.green_duration = float(self.get_parameter("green_duration").value)
-        self.yellow_duration = float(self.get_parameter("yellow_duration").value)
-        self.red_duration = float(self.get_parameter("red_duration").value)
-        self.priority_red_reduction_sec = float(
+        self.phase_time_multiplier = float(
+            self.get_parameter("phase_time_multiplier").value
+        )
+        self.phase_time_multiplier = max(0.1, self.phase_time_multiplier)
+
+        base_green_duration = float(self.get_parameter("green_duration").value)
+        base_yellow_duration = float(self.get_parameter("yellow_duration").value)
+        base_red_duration = float(self.get_parameter("red_duration").value)
+
+        base_priority_red_reduction = float(
             self.get_parameter("priority_red_reduction_sec").value
         )
-        self.priority_request_ttl_sec = float(
+        base_priority_request_ttl = float(
             self.get_parameter("priority_request_ttl_sec").value
+        )
+
+        self.green_duration = base_green_duration * self.phase_time_multiplier
+        self.yellow_duration = base_yellow_duration * self.phase_time_multiplier
+        self.red_duration = base_red_duration * self.phase_time_multiplier
+
+        self.priority_red_reduction_sec = (
+            base_priority_red_reduction * self.phase_time_multiplier
+        )
+
+        self.priority_request_ttl_sec = (
+            base_priority_request_ttl * self.phase_time_multiplier
         )
 
         self.nodes = {}
@@ -299,7 +325,11 @@ class TrafficLightManager(Node):
         if self.has_priority_for_axis(next_axis):
             duration -= self.priority_red_reduction_sec
 
-        return max(0.0, duration)
+        # Anche con priorità, non saltare mai completamente la fase rossa.
+        # Serve a dare tempo all'incrocio di svuotarsi.
+        min_red_duration = max(3.0, self.red_duration * 0.20)
+
+        return max(min_red_duration, duration)
 
     def set_phase(self, phase):
         if phase == self.current_phase:
@@ -307,7 +337,16 @@ class TrafficLightManager(Node):
 
         self.current_phase = phase
         self.phase_started_at = time.time()
-        self.get_logger().info(f"{self.node_id}: fase -> {phase.value}")
+        self.get_logger().info(
+            f"traffic_light_manager avviato | node={self.node_id} | "
+            f"x={self.x_branches} | y={self.y_branches} | "
+            f"multiplier={self.phase_time_multiplier}x | "
+            f"green={self.green_duration}s, "
+            f"yellow={self.yellow_duration}s, "
+            f"red={self.red_duration}s | "
+            f"priority_reduction={self.priority_red_reduction_sec}s, "
+            f"priority_ttl={self.priority_request_ttl_sec}s"
+        )
 
     # ============================================================
     # LOGICA SEMAFORICA
