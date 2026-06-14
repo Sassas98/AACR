@@ -480,7 +480,7 @@ class GazeboVisualController(Node):
             "-s", service,
             "--reqtype", reqtype,
             "--reptype", reptype,
-            "--timeout", "1000",
+            "--timeout", "5000",
             "--req", req
         ]
 
@@ -489,7 +489,7 @@ class GazeboVisualController(Node):
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=2.0
+                timeout=5.5
             )
         except Exception:
             pass

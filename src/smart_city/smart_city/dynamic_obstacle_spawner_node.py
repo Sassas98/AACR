@@ -62,7 +62,7 @@ class DynamicObstacleSpawnerNode(Node):
         self.declare_parameter("global_time_scale", 2.5)
 
         # Aggiornamenti più frequenti = movimento meno a scatti.
-        self.declare_parameter("update_period_sec", 0.05)
+        self.declare_parameter("update_period_sec", 0.2)
 
         # Evita salti grossi se il servizio Gazebo lagga.
         self.declare_parameter("max_step_dt_sec", 0.06)
